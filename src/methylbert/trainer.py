@@ -18,7 +18,7 @@ from transformers import (BertConfig, BertForMaskedLM,
 
 from methylbert.config import MethylBERTConfig, get_config
 from methylbert.data.vocab import MethylVocab
-from methylbert.network import MethylBertEmbeddedDMR
+from methylbert.network import MethylBertEmbeddedDMRWithClassifier
 from methylbert.utils import get_dna_seq
 
 torch.set_warn_always(False) # one warning per process
@@ -381,7 +381,6 @@ class MethylBertFinetuneTrainer(MethylBertTrainer):
         '''
         Create a new MethylBERT model from the configuration
         '''
-
         config = MethylBERTConfig.from_pretrained(config_file,
             num_labels=self.train_data.dataset.num_dmrs(),
             output_attentions=True,
@@ -668,6 +667,383 @@ class MethylBertFinetuneTrainer(MethylBertTrainer):
                 output_hidden_states=True,
                 seq_len = self.train_data.dataset.seq_len,
                 loss=self._config.loss
+                )
+
+        self._setup_model()
+
+    def read_classification(self, data_loader: DataLoader = None, tokenizer: MethylVocab = None, logit: bool = False):
+        '''
+        Classify sequencing reads into cell types
+
+        data_loader: torch.utils.data.DataLoader
+            DataLoader containing reads to classify. If nothing is given, the trainer tries to assign 'test_data'
+        output_dir: str
+            Directory to save the result. If nothing is given, the results is saved in 'save_path'
+        save_logit: bool (default: False)
+            Whether save the calculated classification logits or not
+        '''
+
+        if data_loader is None:
+            if self.test_data is None:
+                ValueError("There is no test_data assigned to the trainer. Please give a DataLoader as an input.")
+            else:
+                data_loader = self.test_data
+
+        # classification
+        res = dict()
+        logits = list()
+        self.model.eval()
+
+        pbar = tqdm(total=len(data_loader))
+        for i, batch in enumerate(data_loader):
+
+            # 0. batch_data will be sent into the device(GPU or cpu)
+            data = dict()
+
+            for k, v in batch.items():
+                if type(v) != list:
+                    data[k] = v.to(self.device)
+                if k not in res.keys():
+                    res[k] = v.numpy() if type(v) == torch.Tensor else v
+                else:
+                    res[k] = np.concatenate([res[k], v.numpy() if type(v) == torch.Tensor else v], axis=0)
+
+            with torch.no_grad():
+                with torch.autocast(device_type="cuda" if self._config.with_cuda else "cpu",
+                                    enabled=self._config.amp):
+                    mask_lm_output = self.model.forward(step=0,
+                                            input_ids = data["dna_seq"],
+                                            token_type_ids=data["methyl_seq"],
+                                            labels = data["dmr_label"],
+                                            ctype_label=data["ctype_label"])
+
+                if "pred" in res.keys():
+                    res["pred"] = np.concatenate([res["pred"], np.argmax(mask_lm_output["classification_logits"].cpu().detach(), axis=-1)], axis=0)
+                else:
+                    res["pred"] = np.argmax(mask_lm_output["classification_logits"].cpu().detach(), axis=-1)
+
+                if logit:
+                    logits.append(mask_lm_output["classification_logits"].cpu().detach().numpy())
+
+            del mask_lm_output
+            del data
+
+            pbar.update(1)
+        pbar.close()
+
+        if logit:
+            logits = np.concatenate(logits, axis=0)
+        res["dna_seq"]=[get_dna_seq(s, tokenizer) for s in res["dna_seq"]]
+        res["methyl_seq"]=["".join([str(mm) for mm in m]) for m in res["methyl_seq"]]
+
+        res = pd.DataFrame(res)
+
+        return res if not logit else res, logits
+
+class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
+    def __init__(self, num_classes = 2, *args, **kwargs):
+        kwargs["num_classes"] = num_classes
+        self.num_classes = num_classes
+        super().__init__(self, *args, **kwargs)
+
+    def summary(self):
+        '''
+        Print the summary of the MethylBERT model
+        '''
+        print(self.model)
+
+    def create_model(self, config_file: str = None):
+        '''
+        Create a new MethylBERT model from the configuration
+        '''
+        config = MethylBERTConfig.from_pretrained(config_file,
+            num_labels=self.train_data.dataset.num_dmrs(),
+            num_classes=self.num_classes,
+            output_attentions=True,
+            output_hidden_states=True,
+            hidden_dropout_prob=0.01,
+            vocab_size = len(self.train_data.dataset.vocab),
+            loss=self._config.loss)
+
+        self.bert = MethylBertEmbeddedDMRWithClassifier(config=config,
+                                          seq_len=self.train_data.dataset.seq_len,
+                                          num_classes=self.num_classes)
+
+        # Initialize the BERT Language Model, with BERT model
+        self._setup_model()
+
+    def _eval_iteration(self, data_loader: DataLoader, return_logits: bool = False):
+        """
+        loop over the data_loader for eval/test
+
+        :param data_loader: torch.utils.data.DataLoader for test
+        :return: DataFrame,
+        """
+
+        predict_res = {"dmr_label":[], "pred_ctype_label":[], "ctype_label":[]}
+        logits = list()
+
+        mean_loss = 0
+        self.model.eval()
+        with torch.no_grad():
+            for i, batch in enumerate(data_loader):
+                # 0. batch_data will be sent into the device(GPU or cpu)
+                data = {key: value.to(self.device) for key, value in batch.items() if type(value) != list}
+
+                with torch.autocast(device_type="cuda" if self._config.with_cuda else "cpu", enabled=self._config.amp):
+                    mask_lm_output = self.model.forward(step=self.step,
+                                            input_ids = data["dna_seq"],
+                                            token_type_ids=data["methyl_seq"],
+                                            labels = data["dmr_label"],
+                                            ctype_label=data["ctype_label"])
+
+                loss = mask_lm_output["loss"].mean().item() if "cuda" in self.device.type else mask_lm_output["loss"].item()
+                mean_loss += loss/len(data_loader)
+
+                if self._config.with_cuda and torch.cuda.device_count() > 1:
+                    torch.cuda.synchronize()
+
+                predict_res["dmr_label"].append(data["dmr_label"].detach().cpu())
+                predict_res["pred_ctype_label"].append(torch.argmax(mask_lm_output["classification_logits"], dim=-1).detach().cpu())
+                predict_res["ctype_label"].append(data["ctype_label"].detach().cpu())
+
+                if return_logits:
+                    logits.append(mask_lm_output["classification_logits"].detach().cpu().numpy())
+
+                del mask_lm_output
+                del data
+
+        predict_res["dmr_label"] = np.concatenate(predict_res["dmr_label"],  axis=0)
+        predict_res["ctype_label"] = np.concatenate(predict_res["ctype_label"],  axis=0)
+        predict_res["pred_ctype_label"] = np.concatenate(predict_res["pred_ctype_label"], axis=0)
+
+        self.model.train()
+
+        if not return_logits:
+            return predict_res, mean_loss
+        else:
+            return predict_res, mean_loss, np.concatenate(return_logits, axis=0)
+        
+    def _iteration(self, steps, data_loader, verbose = 1):
+        """
+        loop over the data_loader for training or testing
+        if on train status, backward operation is activated
+        and also auto save the model every peoch
+
+        :param steps: total steps to train
+        :param data_loader: torch.utils.data.DataLoader for training
+        :param warm_up: number of steps for warming up the learning rate
+        :return: None
+        """
+
+        self.step = 0
+
+        if os.path.exists(self.f_train):
+            os.remove(self.f_train)
+
+        with open(self.f_train, "w") as f_perform:
+            f_perform.write("step\tloss\tctype_acc\tlr\n")
+
+        if os.path.exists(self.f_eval):
+            os.remove(self.f_eval)
+
+        with open(self.f_eval, "w") as f_perform:
+            f_perform.write("step\tloss\tctype_acc\n")
+
+
+        # Set up a learning rate scheduler
+        self.scheduler = learning_rate_scheduler(self.optim,
+                                                         num_warmup_steps=self._config.warmup_step,
+                                                         num_training_steps=steps,
+                                                         decrease_steps=self._config.decrease_steps)
+        global_step_loss = 0
+        local_step = 0
+
+        epochs = steps // (len(data_loader) // self._config.gradient_accumulation_steps) + 1
+
+        self.model.zero_grad()
+        if verbose > 0:
+            print(self.model.training)
+        self.model.train()
+        train_prediction_res = {"dmr_label":[], "pred_ctype_label":[], "ctype_label":[]}
+
+        scaler = GradScaler() if self._config.amp else None
+
+        duration = 0
+        epoch_progress_bar = tqdm(total=epochs, desc="Training...")
+        for epoch in range(epochs):
+            steps_progress_bar = tqdm(total=min(steps, len(data_loader)),
+                                      desc=f"Epoch {epoch+1}/{epochs}")
+            for i, batch in enumerate(data_loader):
+                # 0. batch_data will be sent into the device(GPU or cpu)
+                data = {key: value.to(self.device) for key, value in batch.items() if type(value) != list}
+
+                start = time.time()
+                with torch.autocast(device_type="cuda" if self._config.with_cuda else "cpu",
+                                    enabled=self._config.amp):
+                    mask_lm_output = self.model.forward(step=self.step,
+                                            input_ids=data["dna_seq"],
+                                            token_type_ids=data["methyl_seq"],
+                                            labels=data["dmr_label"],
+                                            ctype_label=data["ctype_label"])
+                loss = mask_lm_output["loss"]
+
+                # Concatenate predicted sequences for the evaluation
+                train_prediction_res["dmr_label"].append(data["dmr_label"].detach().cpu())
+
+
+                # Cell-type classification
+                train_prediction_res["pred_ctype_label"].append(np.argmax(mask_lm_output["classification_logits"].cpu().detach(), axis=-1))
+                train_prediction_res["ctype_label"].append(data["ctype_label"].detach().cpu())
+
+
+                # Calculate loss and back-propagation
+                loss = mask_lm_output["loss"].mean() if "cuda" in self.device.type else mask_lm_output["loss"]
+                loss = loss/self._config.gradient_accumulation_steps
+                scaler.scale(loss).backward(retain_graph=True) if self._config.amp else loss.backward(retain_graph=True)
+
+                loss_val = loss.item()
+                global_step_loss += loss_val
+
+                duration += time.time() - start
+                # Gradient accumulation
+                if (local_step+1) % self._config.gradient_accumulation_steps == 0:
+                    gradient_accum_start = time.time()
+                    if self._config.amp:
+                        scaler.unscale_(self.optim)
+                        nn.utils.clip_grad_norm_(self.model.parameters(), self._config.max_grad_norm)
+                        scaler.step(self.optim)
+                        scaler.update()
+                    else:
+                        nn.utils.clip_grad_norm_(self.model.parameters(), self._config.max_grad_norm)
+                        self.optim.step()
+
+                    self.scheduler.step()
+                    self.model.zero_grad()
+
+                if (local_step+1) % self._config.eval_freq == 0 or local_step == 0:
+                    # Evaluation
+                    eval_pred, eval_loss = self._eval_iteration(self.test_data)
+                    eval_acc = self._acc(eval_pred["pred_ctype_label"], eval_pred["ctype_label"])
+
+                    with open(self.f_eval, "a") as f_perform:
+                        f_perform.write("\t".join([str(self.step), str(eval_loss), str(eval_acc)]) +"\n")
+
+                    del eval_pred
+
+                    if self.step % self._config.log_freq == 0:
+                        if verbose > 0:
+                            print("\nTrain Step %d iter - loss : %f / lr : %f"%(self.step, global_step_loss, self.optim.param_groups[0]["lr"]))
+                            print(f"Running time for iter = {duration}")
+
+                    if self.min_loss > eval_loss:
+                        if verbose > 0:
+                            print("Step %d loss (%f) is lower than the current min loss (%f). Save the model at %s"%(self.step, eval_loss, self.min_loss, self.save_path))
+                        self.save(self.save_path)
+                        self.min_loss = eval_loss
+
+                    # For saving an interim model to track the training
+                    if ( type(self._config.save_freq) == int ) and (self.step % self._config.save_freq == 0):
+                        step_save_dir=self.save_path.replace("bert.model", "bert.model_step%d"%(self.step))
+                        if verbose > 0:
+                            print("Step %d: Save an interim model at %s"%(self.step, step_save_dir))
+                        if not os.path.exists(step_save_dir):
+                            os.mkdir(step_save_dir)
+                        self.save(step_save_dir)
+
+                    # Save the step info (step, loss, lr, acc)
+                    with open(self.f_train, "a") as f_perform:
+
+                        train_prediction_res["dmr_label"] = np.concatenate(train_prediction_res["dmr_label"],  axis=0)
+                        train_prediction_res["pred_ctype_label"] = np.concatenate(train_prediction_res["pred_ctype_label"], axis=0)
+                        train_prediction_res["ctype_label"] = np.concatenate(train_prediction_res["ctype_label"],  axis=0)
+                        train_ctype_acc = self._acc(train_prediction_res["pred_ctype_label"], train_prediction_res["ctype_label"])
+
+                        f_perform.write("\t".join([str(self.step), str(global_step_loss), str(train_ctype_acc),  str(self.optim.param_groups[0]["lr"])])+"\n")
+
+                    steps_progress_bar.set_postfix(eval_loss=eval_loss)
+                    # Reset prediction result
+                    del train_prediction_res
+                    train_prediction_res =  {"dmr_label":[], "pred_ctype_label":[], "ctype_label":[]}
+
+                self.step += 1
+                duration=0
+                global_step_loss = 0
+
+                steps_progress_bar.update()
+
+                if steps == self.step:
+                    break
+                local_step+=1
+
+            steps_progress_bar.close()
+            epoch_progress_bar.update()
+
+            if steps == self.step:
+                break
+
+    def save(self, file_path: str="output/bert_trained.model"):
+        '''
+        Save the MethylBERT model in the given path
+        '''
+        self.bert.to("cpu")
+        self.bert.save_pretrained(file_path)
+
+        if hasattr(self.bert, "read_classifier"):
+            torch.save(self.bert.read_classifier.state_dict(), os.path.dirname(file_path)+"/read_classification_model.pickle")
+
+        if hasattr(self.bert, "dmr_encoder"):
+            torch.save(self.bert.dmr_encoder.state_dict(), os.path.dirname(file_path)+"/dmr_encoder.pickle")
+
+        self.bert.to(self.device)
+        print("Step:%d Model Saved on:" % self.step, file_path)
+
+    def load(self, dir_path: str, n_dmrs: int=None, load_fine_tune: bool=False):
+        '''
+        Load pre-trained / fine-tuned MethylBERT model
+        dir_path: str
+            Directory to the saved bert model. It must contain "config.json" and "pytorch_model.bin" files
+        n_dmrs: int (default: None)
+            Number of DMRs to reconstruct the MethylBERT model. If the number is not given, the trainer auto-calculates the number from the same data
+        load_fine_tune: bool (default: False)
+            Whether the loaded model is a fine-tuned model including num_dmrs or a pre-trained model without num_dmrs
+        '''
+        print(f"Restore the pretrained model {dir_path}")
+
+        if load_fine_tune:
+            '''
+            if n_dmrs is not None:
+                raise ValueError("You cannot give a new number of DMRs for loading a fine-tuned model. The model should contains one. Please set either n_dmrs=None or load_fine_tune=False")
+            '''
+
+            self.bert = MethylBertEmbeddedDMRWithClassifier.from_pretrained(dir_path,
+				output_attentions=True,
+                output_hidden_states=True,
+                seq_len = self.train_data.dataset.seq_len,
+                loss=self._config.loss,
+                num_labels=n_dmrs,
+                num_classes=self.num_classes
+                )
+
+            try:
+                self.bert.from_pretrained_dmr_encoder(os.path.dirname(dir_path)+"/dmr_encoder.pickle", self.device)
+                print("Restore DMR encoder from %s"%(os.path.dirname(dir_path)+"/dmr_encoder.pickle"))
+            except FileNotFoundError:
+                print(os.path.dirname(dir_path)+"/dmr_encoder.pickle is not found.")
+
+            try:
+                self.bert.from_pretrained_read_classifier(os.path.dirname(dir_path)+"/read_classification_model.pickle", self.device)
+                print("Restore read classification FCN model from %s"%(os.path.dirname(dir_path)+"/read_classification_model.pickle"))
+            except FileNotFoundError:
+                print(os.path.dirname(dir_path)+"/read_classification_model.pickle is not found.")
+        else:
+            self.bert = MethylBertEmbeddedDMRWithClassifier.from_pretrained(dir_path,
+                num_labels=self.train_data.dataset.num_dmrs() if not n_dmrs else n_dmrs,
+                output_attentions=True,
+                output_hidden_states=True,
+                seq_len = self.train_data.dataset.seq_len,
+                loss=self._config.loss,
+                num_classes=self.num_classes
                 )
 
         self._setup_model()
