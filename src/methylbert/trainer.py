@@ -741,10 +741,11 @@ class MethylBertFinetuneTrainer(MethylBertTrainer):
         return res if not logit else res, logits
 
 class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
-    def __init__(self, num_classes = 2, *args, **kwargs):
-        kwargs["num_classes"] = num_classes
-        self.num_classes = num_classes
+    def __init__(self, *args, **kwargs):
         super().__init__(self, *args, **kwargs)
+        self.num_classes = self._config.num_classes
+        self.id2label = self._config.id2label
+        self.label2id = self._config.label2id
 
     def summary(self):
         '''
@@ -754,11 +755,10 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
 
     def create_model(self, config_file: str = None):
         '''
-        Create a new MethylBERT model from the configuration
+        Create a new MethylBERT model from the configuration(save to file)
         '''
         config = MethylBERTConfig.from_pretrained(config_file,
             num_labels=self.train_data.dataset.num_dmrs(),
-            num_classes=self.num_classes,
             output_attentions=True,
             output_hidden_states=True,
             hidden_dropout_prob=0.01,
@@ -766,8 +766,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
             loss=self._config.loss)
 
         self.bert = MethylBertEmbeddedDMRWithClassifier(config=config,
-                                          seq_len=self.train_data.dataset.seq_len,
-                                          num_classes=self.num_classes)
+                                          seq_len=self.train_data.dataset.seq_len)
 
         # Initialize the BERT Language Model, with BERT model
         self._setup_model()
@@ -1022,7 +1021,9 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                 seq_len = self.train_data.dataset.seq_len,
                 loss=self._config.loss,
                 num_labels=n_dmrs,
-                num_classes=self.num_classes
+                num_classes=self.num_classes,
+                id2label=self.id2label,
+                label2id=self.label2id
                 )
 
             try:
@@ -1043,7 +1044,9 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                 output_hidden_states=True,
                 seq_len = self.train_data.dataset.seq_len,
                 loss=self._config.loss,
-                num_classes=self.num_classes
+                num_classes=self.num_classes,
+                id2label=self.id2label,
+                label2id=self.label2id
                 )
 
         self._setup_model()

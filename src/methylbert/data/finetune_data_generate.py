@@ -271,9 +271,6 @@ def finetune_data_generate(
     if "dmr_id" not in dmrs.keys():
       dmrs["dmr_id"] = range(len(dmrs))
 
-    # Save number of labels(classes) to dmr
-    dmrs["num_classes"] = len(dmrs["ctype"].unique())
-
     # Save DMRs in a new file
     dmrs.to_csv(fp_dmr, sep="\t", index=False)
     if verbose > 2:

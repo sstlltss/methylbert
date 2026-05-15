@@ -119,15 +119,13 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
     config_class = MethylBERTConfig
     base_model_prefix = "methylbert"
 
-    def __init__(self, config, seq_len=150, num_classes=2):
+    def __init__(self, config, seq_len=150):
         
-        config.num_labels = num_classes
-        config.id2label = {str(i): f"Label_{i}" for i in range(num_classes)}
-        config.label2id = {f"Label_{i}": str(i) for i in range(num_classes)}
+        self.num_classes = config.num_classes
 
         # from pretrained - calls the init
         super().__init__(config)
-        self.num_labels = num_classes
+        self.num_labels = config.num_labels
 
         if config.loss not in ["bce", "focal_bce"]:
             raise ValueError(f"loss must be bce or focal_bce. {config.loss} is given.")
@@ -141,7 +139,7 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
             nn.Dropout(0.05),#config.hidden_dropout_prob),
             nn.ReLU(),
             nn.LayerNorm(seq_len+1, eps=config.layer_norm_eps),
-            nn.Linear(seq_len+1, num_classes)
+            nn.Linear(seq_len+1, self.num_classes)
         )
 
         self.seq_len = seq_len
@@ -204,7 +202,7 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
         # 先不改试试看：sequence_output.view(-1,sequence_output.shape[0])
         ctype_logits = self.read_classifier(sequence_output.view(-1,(self.seq_len+1)*769))
         
-        loss = self.classification_loss_fct(ctype_logits.view(-1, self.num_labels), 
+        loss = self.classification_loss_fct(ctype_logits.view(-1, self.num_classes), 
                                             ctype_label.view(-1).long())
         ctype_logits = ctype_logits.softmax(dim=1)
 
