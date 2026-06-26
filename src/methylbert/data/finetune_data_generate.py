@@ -7,7 +7,7 @@ import sys
 import uuid
 import warnings
 from functools import partial
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import numpy as np
 import pandas as pd
@@ -163,7 +163,7 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame,
         return pd.DataFrame([])
 
 def finetune_data_generate(
-        f_dmr: str,
+        f_dmr: Dict[str,str],
         output_dir: str,
         f_ref: str,
         sc_dataset: str = None,
@@ -180,6 +180,11 @@ def finetune_data_generate(
         verbose: int = 2,
         read_extract_sequences_func: Optional[callable] = None
     ):
+    
+    # Check f_dmr
+    if not isinstance(f_dmr, dict):
+        raise TypeError("f_dmr must be a dictionary of DMR files, with key=cancer type, value=dmr file name.")
+    n_f_dmr = len(f_dmr.keys)
 
     # Setup random seed
     random.seed(seed)
@@ -201,7 +206,6 @@ def finetune_data_generate(
     # Setup output files
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
-    fp_dmr = os.path.join(output_dir, "dmrs.csv") # File to save selected DMRs
 
     # Reference genome
     record_iter = SeqIO.parse(f_ref, "fasta")
@@ -213,71 +217,80 @@ def finetune_data_generate(
     del record_iter
 
     # Load DMRs into a dataframe
-    dmrs = pd.read_csv(f_dmr, sep="\t", index_col=None)
-    if ("chr" not in dmrs.keys()) or \
-       ("start" not in dmrs.keys()) or \
-       ("end" not in dmrs.keys()):
-        ValueError("The .csv file for DMRs must contain chr, start and end in the header.")
+    all_dmrs = f_dmr
+    for cancer, dmr_file in f_dmr.item:
+        fp_dmr = os.path.join(output_dir, f"{cancer}_dmrs.csv") # File to save selected DMRs
+        dmrs = pd.read_csv(dmr_file, sep=",", index_col=None)
+        if ("chr" not in dmrs.keys()) or \
+        ("start" not in dmrs.keys()) or \
+        ("end" not in dmrs.keys()):
+            ValueError("The .csv file for DMRs must contain chr, start and end in the header.")
 
-    # Remove chrX, chrY, chrM and so on in DMRs
-    # Genome style
-    if "chr" in str(dmrs["chr"][0]):
-        regex_expr = "chr\d+" if ignore_sex_chromo else "chr[\d+|X|Y]"
-        old_keys = list(dict_ref.keys())
-        for k in old_keys:
-            if "chr" not in k: dict_ref[f"chr{k}"] = dict_ref.pop(k)
-    else: # NCBI style genome
-        dmrs["chr"] = dmrs["chr"].astype(str)
-        regex_expr = "\d+" if ignore_sex_chromo else "[\d+|X|Y]"
-        old_keys = list(dict_ref.keys())
-        for k in old_keys:
-            if "chr" in k: dict_ref[k.split("chr")[1]] = dict_ref.pop(k)
+        # Remove chrX, chrY, chrM and so on in DMRs
+        # Genome style
+        if "chr" in str(dmrs["chr"][0]):
+            regex_expr = "chr\d+" if ignore_sex_chromo else "chr[\d+|X|Y]"
+            old_keys = list(dict_ref.keys())
+            for k in old_keys:
+                if "chr" not in k: dict_ref[f"chr{k}"] = dict_ref.pop(k)
+        else: # NCBI style genome
+            dmrs["chr"] = dmrs["chr"].astype(str)
+            regex_expr = "\d+" if ignore_sex_chromo else "[\d+|X|Y]"
+            old_keys = list(dict_ref.keys())
+            for k in old_keys:
+                if "chr" in k: dict_ref[k.split("chr")[1]] = dict_ref.pop(k)
 
-    dmrs = dmrs[dmrs["chr"].str.contains(regex_expr, regex=True)]
+        dmrs = dmrs[dmrs["chr"].str.contains(regex_expr, regex=True)]
 
-    if dmrs.shape[0] == 0:
-        ValueError("Could not find any DMRs. Please make sure chromosomes have \'chr\' at the beginning.")
+        if dmrs.shape[0] == 0:
+            ValueError("Could not find any DMRs. Please make sure chromosomes have \'chr\' at the beginning.")
 
-    # Sort by statistics if available
-    if "areaStat" in dmrs.keys():
+        # Sort by statistics if available
+        if "areaStat" in dmrs.keys():
+            if verbose > 0:
+                print("DMRs sorted by areaStat")
+            dmrs["abs_areaStat"]  = dmrs["areaStat"].abs()
+            dmrs = dmrs.sort_values(by="abs_areaStat", ascending=False)
+        elif "diff.Methy" in dmrs.keys():
+            if verbose > 0:
+                print("DMRs sorted by diff.Methy")
+            dmrs["abs_diff.Methy"]  = dmrs["diff.Methy"].abs()
+            dmrs = dmrs.sort_values(by="abs_diff.Methy", ascending=False)
+        else:
+            if verbose > 0:
+                print("Could not find any statistics to sort DMRs")
+
+        # Add "ctype" column with the given cancer name
+        if "ctype" not in dmrs.columns():
+            dmrs["ctype"] = [cancer] * dmrs.shape[0]
+
+        # Select top n dmrs based on
+        if n_dmrs > 0:
+            if verbose > 0:
+                print(f"{n_dmrs} are selected based on the statistics")
+            list_dmrs = list()
+            for c in dmrs["ctype"].unique(): #  For the case when multiple cell types are given
+                ctype_dmrs = dmrs[dmrs["ctype"]==c]
+                if ctype_dmrs.shape[0] > n_dmrs:
+                    list_dmrs.append(ctype_dmrs[:n_dmrs])
+                else:
+                    list_dmrs.append(ctype_dmrs)
+            dmrs = pd.concat(list_dmrs)
+            del list_dmrs
+
+        # Newly assign dmr label from 0
+        if "dmr_id" not in dmrs.keys():
+            dmrs["dmr_id"] = range(len(dmrs))
+
+        # Save DMRs into all_dmrs
+        all_dmrs[cancer] = dmrs
+        # Save DMRs in a new file
+        dmrs.to_csv(fp_dmr, sep="\t", index=False)
+        if verbose > 2:
+            print(dmrs.head())
+
         if verbose > 0:
-            print("DMRs sorted by areaStat")
-        dmrs["abs_areaStat"]  = dmrs["areaStat"].abs()
-        dmrs = dmrs.sort_values(by="abs_areaStat", ascending=False)
-    elif "diff.Methy" in dmrs.keys():
-        if verbose > 0:
-            print("DMRs sorted by diff.Methy")
-        dmrs["abs_diff.Methy"]  = dmrs["diff.Methy"].abs()
-        dmrs = dmrs.sort_values(by="abs_diff.Methy", ascending=False)
-    else:
-        if verbose > 0:
-            print("Could not find any statistics to sort DMRs")
-
-    # Select top n dmrs based on
-    if n_dmrs > 0:
-        if verbose > 0:
-            print(f"{n_dmrs} are selected based on the statistics")
-        list_dmrs = list()
-        for c in dmrs["ctype"].unique(): #  For the case when multiple cell types are given
-            ctype_dmrs = dmrs[dmrs["ctype"]==c]
-            if ctype_dmrs.shape[0] > n_dmrs:
-                list_dmrs.append(ctype_dmrs[:n_dmrs])
-            else:
-                list_dmrs.append(ctype_dmrs)
-        dmrs = pd.concat(list_dmrs)
-        del list_dmrs
-
-    # Newly assign dmr label from 0
-    if "dmr_id" not in dmrs.keys():
-      dmrs["dmr_id"] = range(len(dmrs))
-
-    # Save DMRs in a new file
-    dmrs.to_csv(fp_dmr, sep="\t", index=False)
-    if verbose > 2:
-        print(dmrs.head())
-
-    if verbose > 0:
-        print(f"Number of DMRs to extract sequence reads: {len(dmrs)}")
+            print(f"Number of DMRs to extract sequence reads: {len(dmrs)}")
 
     # check whether the input is a file or a file list
     if ( not sc_dataset ) and ( not input_file ):
@@ -310,16 +323,17 @@ def finetune_data_generate(
     for f_sc in sc_files:
         f_sc = f_sc.strip().split("\t")
         f_sc_bam = f_sc[0]
+        f_sc_dmr = f_sc[1]
 
         if read_extract_sequences_func is None:
             extracted_reads = read_extract(
-                f_sc_bam, dict_ref, k=3, dmrs=dmrs,
+                f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
                 ncores=n_cores, methyl_caller=methyl_caller
             )
         else:
             # custom function
             extracted_reads = read_extract_sequences_func(
-                f_sc_bam, dict_ref, k=3, dmrs=dmrs,
+                f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
                 ncores=n_cores, methyl_caller=methyl_caller
             )
 
@@ -336,8 +350,8 @@ def finetune_data_generate(
         '''
         if len(f_sc) > 1:
             if verbose > 1:
-                print(f"{f_sc_bam} processing ({f_sc[1]})...")
-            extracted_reads["ctype"] = f_sc[1]
+                print(f"{f_sc_bam} processing ({f_sc_dmr})...")
+            extracted_reads["ctype"] = f_sc_dmr
         else:
             extracted_reads["ctype"] = "NA"
         extracted_reads = extracted_reads.rename(columns={"RF":"dna_seq", 
