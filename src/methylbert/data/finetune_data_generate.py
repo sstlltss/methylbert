@@ -306,7 +306,7 @@ def finetune_data_generate(
         # Collect train data (single-cell samples)
         train_sc_samples = []
         with open(sc_dataset, "r") as fp_sc_dataset:
-            sc_files = fp_sc_dataset.readlines()
+            sc_files = pd.read_csv(fp_sc_dataset,header=None,sep=",")
 
         if ( len(sc_files) < 10 ) and ( use_file_name ):
             warnings.warn("We do not encourage to users to set use_file_name=True with the number of input bam files < 10. It can cause an unexpected error.")
