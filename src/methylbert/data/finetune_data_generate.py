@@ -184,7 +184,6 @@ def finetune_data_generate(
     # Check f_dmr
     if not isinstance(f_dmr, dict):
         raise TypeError("f_dmr must be a dictionary of DMR files, with key=cancer type, value=dmr file name.")
-    n_f_dmr = len(f_dmr.keys)
 
     # Setup random seed
     random.seed(seed)
@@ -218,7 +217,7 @@ def finetune_data_generate(
 
     # Load DMRs into a dataframe
     all_dmrs = f_dmr
-    for cancer, dmr_file in f_dmr.item:
+    for cancer, dmr_file in f_dmr.items():
         fp_dmr = os.path.join(output_dir, f"{cancer}_dmrs.csv") # File to save selected DMRs
         dmrs = pd.read_csv(dmr_file, sep=",", index_col=None)
         if ("chr" not in dmrs.keys()) or \
@@ -261,7 +260,7 @@ def finetune_data_generate(
                 print("Could not find any statistics to sort DMRs")
 
         # Add "ctype" column with the given cancer name
-        if "ctype" not in dmrs.columns():
+        if not ("ctype" in dmrs.columns):
             dmrs["ctype"] = [cancer] * dmrs.shape[0]
 
         # Select top n dmrs based on
@@ -297,7 +296,7 @@ def finetune_data_generate(
         ValueError("Please provide either a list of input files or a file path. Both are given.")
     elif ( not sc_dataset ):
         # one input file in the list
-        sc_files = [input_file]
+        sc_files = pd.DataFrame({input_file: "T"})
         if use_file_name:
             if verbose > 0:
                 print('When only one input file is give, file name cannot be used for the train-test split. We set use_file_name=False. Read names will be used for the split')
@@ -305,8 +304,7 @@ def finetune_data_generate(
     elif ( not input_file ):
         # Collect train data (single-cell samples)
         train_sc_samples = []
-        with open(sc_dataset, "r") as fp_sc_dataset:
-            sc_files = pd.read_csv(fp_sc_dataset,header=None,sep=",")
+        sc_files = pd.read_csv(sc_dataset,header=None,sep=",")
 
         if ( len(sc_files) < 10 ) and ( use_file_name ):
             warnings.warn("We do not encourage to users to set use_file_name=True with the number of input bam files < 10. It can cause an unexpected error.")
@@ -320,57 +318,58 @@ def finetune_data_generate(
     
     # file/read name - cell type pair for stratification in train test split
     files_lbl_map = {} 
-    for f_sc in sc_files:
-        f_sc = f_sc.strip().split("\t")
-        f_sc_bam = f_sc[0]
-        f_sc_dmr = f_sc[1]
+    for f_sc_file in sc_files.itertuples():
+        f_sc = pd.read_csv(f_sc_file, sep=",")
+        for i in range(f_sc.shape[0]):
+            f_sc_bam = f_sc.iloc[i,0]
+            f_sc_dmr = all_dmrs[f_sc.iloc[i,1]]
 
-        if read_extract_sequences_func is None:
-            extracted_reads = read_extract(
-                f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
-                ncores=n_cores, methyl_caller=methyl_caller
-            )
-        else:
-            # custom function
-            extracted_reads = read_extract_sequences_func(
-                f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
-                ncores=n_cores, methyl_caller=methyl_caller
-            )
-
-        if extracted_reads is None:
-            continue
-
-        # cell type for the single-cell data
-        '''
-        if "RG" in extracted_reads.columns:
-            extracted_reads = extracted_reads.rename(columns={"RG":"read_ctype"})
-            #extracted_reads["ctype"] = [c.split("_")[1][:3]+"-"+c.split("_")[1][3] for c in extracted_reads["read_ctype"]] # mouse single-cell
-            extracted_reads["ctype"] = [c.split("_")[1] for c in extracted_reads["read_ctype"]] # tumour pseudo bulk
-        else:
-        '''
-        if len(f_sc) > 1:
-            if verbose > 1:
-                print(f"{f_sc_bam} processing ({f_sc_dmr})...")
-            extracted_reads["ctype"] = f_sc_dmr
-        else:
-            extracted_reads["ctype"] = "NA"
-        extracted_reads = extracted_reads.rename(columns={"RF":"dna_seq", 
-                                                          "ME":"methyl_seq"})
-
-        if(extracted_reads.shape[0] > 0):
-            if use_file_name:
-                filename = os.path.basename(f_sc_bam)
-                if len(f_sc) > 1:
-                    files_lbl_map[filename] = extracted_reads['ctype'][0]  
-                extracted_reads["filename"] = filename
+            if read_extract_sequences_func is None:
+                extracted_reads = read_extract(
+                    f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
+                    ncores=n_cores, methyl_caller=methyl_caller
+                )
             else:
-                for name, ctype in zip(extracted_reads['name'], 
-                                       extracted_reads['ctype']):
-                    files_lbl_map[name] = ctype
+                # custom function
+                extracted_reads = read_extract_sequences_func(
+                    f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
+                    ncores=n_cores, methyl_caller=methyl_caller
+                )
 
-            df_reads.append(extracted_reads)
+            if extracted_reads is None:
+                continue
 
-        tqdm_bar.update()
+            # cell type for the single-cell data
+            '''
+            if "RG" in extracted_reads.columns:
+                extracted_reads = extracted_reads.rename(columns={"RG":"read_ctype"})
+                #extracted_reads["ctype"] = [c.split("_")[1][:3]+"-"+c.split("_")[1][3] for c in extracted_reads["read_ctype"]] # mouse single-cell
+                extracted_reads["ctype"] = [c.split("_")[1] for c in extracted_reads["read_ctype"]] # tumour pseudo bulk
+            else:
+            '''
+            if len(f_sc) > 1:
+                if verbose > 1:
+                    print(f"{f_sc_bam} processing ({f_sc_dmr})...")
+                extracted_reads["ctype"] = f_sc_dmr
+            else:
+                extracted_reads["ctype"] = "NA"
+            extracted_reads = extracted_reads.rename(columns={"RF":"dna_seq", 
+                                                            "ME":"methyl_seq"})
+
+            if(extracted_reads.shape[0] > 0):
+                if use_file_name:
+                    filename = os.path.basename(f_sc_bam)
+                    if len(f_sc) > 1:
+                        files_lbl_map[filename] = extracted_reads['ctype'][0]  
+                    extracted_reads["filename"] = filename
+                else:
+                    for name, ctype in zip(extracted_reads['name'], 
+                                        extracted_reads['ctype']):
+                        files_lbl_map[name] = ctype
+
+                df_reads.append(extracted_reads)
+
+            tqdm_bar.update()
 
     # Integrate all reads and shuffle
     if len(df_reads) > 0:
