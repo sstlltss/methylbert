@@ -318,114 +318,121 @@ def finetune_data_generate(
     
     # file/read name - cell type pair for stratification in train test split
     files_lbl_map = {} 
-    for f_sc_file in sc_files.itertuples():
-        f_sc = pd.read_csv(f_sc_file, sep=",")
-        for i in range(f_sc.shape[0]):
-            f_sc_bam = f_sc.iloc[i,0]
-            f_sc_dmr = all_dmrs[f_sc.iloc[i,1]]
+    for f_sc in sc_files.itertuples():
+        f_sc_bam = f_sc[1]  # bam file path
+        if f_sc[2] == "PC":
+            continue
+        f_sc_dmr = all_dmrs[f_sc[2]]    # get dmr file from the cell type of the bam file
 
-            if read_extract_sequences_func is None:
-                extracted_reads = read_extract(
-                    f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
-                    ncores=n_cores, methyl_caller=methyl_caller
-                )
-            else:
-                # custom function
-                extracted_reads = read_extract_sequences_func(
-                    f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
-                    ncores=n_cores, methyl_caller=methyl_caller
-                )
-
-            if extracted_reads is None:
-                continue
-
-            # cell type for the single-cell data
-            '''
-            if "RG" in extracted_reads.columns:
-                extracted_reads = extracted_reads.rename(columns={"RG":"read_ctype"})
-                #extracted_reads["ctype"] = [c.split("_")[1][:3]+"-"+c.split("_")[1][3] for c in extracted_reads["read_ctype"]] # mouse single-cell
-                extracted_reads["ctype"] = [c.split("_")[1] for c in extracted_reads["read_ctype"]] # tumour pseudo bulk
-            else:
-            '''
-            if len(f_sc) > 1:
-                if verbose > 1:
-                    print(f"{f_sc_bam} processing ({f_sc_dmr})...")
-                extracted_reads["ctype"] = f_sc_dmr
-            else:
-                extracted_reads["ctype"] = "NA"
-            extracted_reads = extracted_reads.rename(columns={"RF":"dna_seq", 
-                                                            "ME":"methyl_seq"})
-
-            if(extracted_reads.shape[0] > 0):
-                if use_file_name:
-                    filename = os.path.basename(f_sc_bam)
-                    if len(f_sc) > 1:
-                        files_lbl_map[filename] = extracted_reads['ctype'][0]  
-                    extracted_reads["filename"] = filename
-                else:
-                    for name, ctype in zip(extracted_reads['name'], 
-                                        extracted_reads['ctype']):
-                        files_lbl_map[name] = ctype
-
-                df_reads.append(extracted_reads)
-
-            tqdm_bar.update()
-
-    # Integrate all reads and shuffle
-    if len(df_reads) > 0:
-        df_reads = pd.concat(df_reads, ignore_index=True) \
-            .sample(frac=1) \
-            .reset_index(drop=True) # sample is for shuffling
-
-        if verbose > 1:
-            print("Fine-tuning data generated:", df_reads.head())
-    else:
-        ValueError("Could not find any reads overlapping with the given DMRs. Please try different regions.")
-
-    if verbose > 1:
-        print("Total sequences per cell type")
-        print(df_reads["ctype"].value_counts())
-
-    # Split the data into train and train/valid/test by patient/bam file
-    if split_ratios[0] != 1.0:
-        fp_train_seq = os.path.join(output_dir, "train_seq.csv")
-        fp_test_seq = os.path.join(output_dir, "test_seq.csv")
-
-        split_key = "filename" if use_file_name else "name"
-
-        val_test_size = 1 - split_ratios[0]
-        train_files, test_files = train_test_split(
-            list(files_lbl_map.keys()),
-            test_size=val_test_size, random_state=seed,
-            stratify=list(files_lbl_map.values())
-        )
-
-        if split_ratios[-1] > 0.0:
-            fp_val_seq = os.path.join(output_dir, "val_seq.csv")
-            test_size = split_ratios[2] / (split_ratios[1] + split_ratios[2])
-            val_files, test_files = train_test_split(
-                test_files,
-                test_size=test_size, random_state=seed,
-                stratify=[files_lbl_map[e] for e in test_files]
+        if read_extract_sequences_func is None:
+            extracted_reads = read_extract(
+                f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
+                ncores=n_cores, methyl_caller=methyl_caller
+            )
+        else:
+            # custom function
+            extracted_reads = read_extract_sequences_func(
+                f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
+                ncores=n_cores, methyl_caller=methyl_caller
             )
 
-            df_reads.loc[df_reads[split_key].isin(val_files), :] \
-            .to_csv(fp_val_seq, sep="\t", header=True, index=None)
+        if extracted_reads is None:
+            continue
+
+        # cell type for the single-cell data
+        '''
+        if "RG" in extracted_reads.columns:
+            extracted_reads = extracted_reads.rename(columns={"RG":"read_ctype"})
+            #extracted_reads["ctype"] = [c.split("_")[1][:3]+"-"+c.split("_")[1][3] for c in extracted_reads["read_ctype"]] # mouse single-cell
+            extracted_reads["ctype"] = [c.split("_")[1] for c in extracted_reads["read_ctype"]] # tumour pseudo bulk
+        else:
+        '''
+        if sc_files.shape[0] > 1:
+            if verbose > 1:
+                print(f"{f_sc_bam} processing ({f_sc[2]})...")
+            extracted_reads["ctype"] = f_sc[2]
+        else:
+            extracted_reads["ctype"] = "NA"
+        extracted_reads = extracted_reads.rename(columns={"RF":"dna_seq", 
+                                                        "ME":"methyl_seq"})
+
+        if extracted_reads.shape[0] > 0:
+            if use_file_name:
+                filename = os.path.basename(f_sc_bam)
+                if len(sc_files.itertuples) > 1:
+                    files_lbl_map[filename] = extracted_reads['ctype'][0]  
+                extracted_reads["filename"] = filename
+            else:
+                for name, ctype in zip(extracted_reads['name'], 
+                                    extracted_reads['ctype']):
+                    files_lbl_map[name] = ctype
+            extracted_reads.to_csv(
+                output_dir+"data.csv",
+                mode="a",
+                header=not(os.path.exists(output_dir+"all_reads.csv")),
+                index=False
+            )
+
+        tqdm_bar.update()
+    
+    if not (split_ratios[0] < 1.0):
+        if verbose > 1:
+            print("Finished.")
+            exit()
+
+    if verbose > 1:
+        print("Generating fine-tuning data in chunks...")
+    df_reads = pd.read_csv(output_dir+"data.csv", sep=",", header=True, chunksize=500000)
+    fp_train_seq = os.path.join(output_dir, "train_seq.csv")
+    fp_test_seq = os.path.join(output_dir, "test_seq.csv")
+    fp_val_seq = os.path.join(output_dir, "val_seq.csv")
+
+    # Split the data into train and train/valid/test by patient/bam file
+    split_key = "filename" if use_file_name else "name"
+    val_test_size = 1 - split_ratios[0]
+    val_files = []
+    train_files, test_files = train_test_split(
+        list(files_lbl_map.keys()),
+        test_size=val_test_size, random_state=seed,
+        stratify=list(files_lbl_map.values())
+    )
+    if split_ratios[-1] > 0.0:
+        fp_val_seq = os.path.join(output_dir, "val_seq.csv")
+        test_size = split_ratios[2] / (split_ratios[1] + split_ratios[2])
+        val_files, test_files = train_test_split(
+            test_files,
+            test_size=test_size, random_state=seed,
+            stratify=[files_lbl_map[e] for e in test_files]
+        )
+
+    n_train_files = 0
+    n_test_files = 0
+    is_first_test = True
+    is_first_train = True
+    is_first_val = True
+
+    for chunk in df_reads:
+        # Integrate all reads and shuffle
+        if len(chunk) == 0:
+            ValueError("Could not find any reads overlapping with the given DMRs. Please try different regions.")
+
+        if val_files:
+            chunk.loc[chunk[split_key].isin(val_files), :] \
+                .to_csv(fp_val_seq, mode="a", sep="\t", header=is_first_val, index=None)
+            is_first_val = False
         
         # Write train & test files (adding a final column because of sep="\t")
-        df_reads["non_null_col"] = ""
-        df_reads.loc[df_reads[split_key].isin(train_files), :] \
-            .to_csv(fp_train_seq, sep="\t", header=True, index=None)
-        df_reads.loc[df_reads[split_key].isin(test_files), :] \
-            .to_csv(fp_test_seq, sep="\t", header=True, index=None)
+        chunk["non_null_col"] = ""
+        chunk.loc[chunk[split_key].isin(train_files), :] \
+            .to_csv(fp_train_seq, mode="a",sep="\t", header=is_first_train, index=None)
+        chunk.loc[chunk[split_key].isin(test_files), :] \
+            .to_csv(fp_test_seq, mode="a",sep="\t", header=is_first_test, index=None)
+        n_train_files += chunk.loc[chunk[split_key].isin(train_files), :].shape[0]
+        n_test_files += chunk.loc[chunk[split_key].isin(test_files), :].shape[0]
+        is_first_train = n_train_files == 0
+        is_first_test = n_test_files == 0
 
-        if verbose > 0:
-            print("Size - train %d seqs , valid %d seqs "% \
-                (df_reads.loc[df_reads[split_key].isin(train_files), :].shape[0],
-                 df_reads.loc[df_reads[split_key].isin(test_files), :].shape[0]))
+    if verbose > 0:
+        print("Size - train %d seqs , valid %d seqs "% (n_train_files,n_test_files))
 
-    else:
-        fp_data_seq = os.path.join(output_dir, "data.csv")
-        df_reads.to_csv(fp_data_seq, sep="\t", header=True, index=None)
-
-    return df_reads
+    return None
