@@ -162,157 +162,83 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame,
         warnings.warn(f"Zero reads were extracted from {bam_file_path}")
         return pd.DataFrame([])
 
-def finetune_data_generate(
-        f_dmr: Dict[str,str],
-        output_dir: str,
-        f_ref: str,
-        sc_dataset: str = None,
-        input_file: str = None,
-        n_mers: int = 3,
-        split_ratio: float = None,
-        train_valid_test_ratio: List[float] = None,
-        use_file_name: bool = False,
-        n_dmrs: int = -1,
-        n_cores: int = 1,
-        seed: int = 950410,
-        ignore_sex_chromo: bool = True,
-        methyl_caller: str = "bismark",
-        verbose: int = 2,
-        read_extract_sequences_func: Optional[callable] = None
-    ):
-    
-    # Check f_dmr
-    if not isinstance(f_dmr, dict):
-        raise TypeError("f_dmr must be a dictionary of DMR files, with key=cancer type, value=dmr file name.")
+def dmr_loader(all_dmrs, cancer, dmr_file, output_dir, ignore_sex_chromo, dict_ref, verbose, n_dmrs):
+    fp_dmr = os.path.join(output_dir, f"{cancer}_dmrs.csv") # File to save selected DMRs
+    dmrs = pd.read_csv(dmr_file, sep=",", index_col=None)
+    if ("chr" not in dmrs.keys()) or \
+    ("start" not in dmrs.keys()) or \
+    ("end" not in dmrs.keys()):
+        ValueError("The .csv file for DMRs must contain chr, start and end in the header.")
 
-    # Setup random seed
-    random.seed(seed)
-    np.random.seed(seed)
+    # Remove chrX, chrY, chrM and so on in DMRs
+    # Genome style
+    if "chr" in str(dmrs["chr"][0]):
+        regex_expr = "chr\d+" if ignore_sex_chromo else "chr[\d+|X|Y]"
+        old_keys = list(dict_ref.keys())
+        for k in old_keys:
+            if "chr" not in k: dict_ref[f"chr{k}"] = dict_ref.pop(k)
+    else: # NCBI style genome
+        dmrs["chr"] = dmrs["chr"].astype(str)
+        regex_expr = "\d+" if ignore_sex_chromo else "[\d+|X|Y]"
+        old_keys = list(dict_ref.keys())
+        for k in old_keys:
+            if "chr" in k: dict_ref[k.split("chr")[1]] = dict_ref.pop(k)
 
-    # Check split ratio 
-    if (split_ratio is not None) and (train_valid_test_ratio is not None):
-        raise ValueError("Only either of 'split_ratio (float)' or train_valid_test_ratio 'List[float]' must be given.")
-    elif split_ratio is not None:
-        split_ratios = [split_ratio, 1-split_ratio, 0.0]
-    elif train_valid_test_ratio is not None:
-        if ( np.sum(train_valid_test_ratio) != 1.0 ) or \
-            ( len(train_valid_test_ratio) != 3 ):
-            raise ValueError("'train_valid_test_ratio' must be a list with 3 float values whose sum is 1.0")
-        split_ratios = train_valid_test_ratio
-    else:
-        split_ratios = [1.0, 0.0, 0.0] # output must be one single file
+    dmrs = dmrs[dmrs["chr"].str.contains(regex_expr, regex=True)]
 
-    # Setup output files
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+    if dmrs.shape[0] == 0:
+        ValueError("Could not find any DMRs. Please make sure chromosomes have \'chr\' at the beginning.")
 
-    # Reference genome
-    record_iter = SeqIO.parse(f_ref, "fasta")
-
-    # Save the reference genome into a dictionary with chr as a key value
-    dict_ref = dict()
-    for r in record_iter:
-        dict_ref[str(r.id)] = str(r.seq.upper())
-    del record_iter
-
-    # Load DMRs into a dataframe
-    all_dmrs = f_dmr
-    for cancer, dmr_file in f_dmr.items():
-        fp_dmr = os.path.join(output_dir, f"{cancer}_dmrs.csv") # File to save selected DMRs
-        dmrs = pd.read_csv(dmr_file, sep=",", index_col=None)
-        if ("chr" not in dmrs.keys()) or \
-        ("start" not in dmrs.keys()) or \
-        ("end" not in dmrs.keys()):
-            ValueError("The .csv file for DMRs must contain chr, start and end in the header.")
-
-        # Remove chrX, chrY, chrM and so on in DMRs
-        # Genome style
-        if "chr" in str(dmrs["chr"][0]):
-            regex_expr = "chr\d+" if ignore_sex_chromo else "chr[\d+|X|Y]"
-            old_keys = list(dict_ref.keys())
-            for k in old_keys:
-                if "chr" not in k: dict_ref[f"chr{k}"] = dict_ref.pop(k)
-        else: # NCBI style genome
-            dmrs["chr"] = dmrs["chr"].astype(str)
-            regex_expr = "\d+" if ignore_sex_chromo else "[\d+|X|Y]"
-            old_keys = list(dict_ref.keys())
-            for k in old_keys:
-                if "chr" in k: dict_ref[k.split("chr")[1]] = dict_ref.pop(k)
-
-        dmrs = dmrs[dmrs["chr"].str.contains(regex_expr, regex=True)]
-
-        if dmrs.shape[0] == 0:
-            ValueError("Could not find any DMRs. Please make sure chromosomes have \'chr\' at the beginning.")
-
-        # Sort by statistics if available
-        if "areaStat" in dmrs.keys():
-            if verbose > 0:
-                print("DMRs sorted by areaStat")
-            dmrs["abs_areaStat"]  = dmrs["areaStat"].abs()
-            dmrs = dmrs.sort_values(by="abs_areaStat", ascending=False)
-        elif "diff.Methy" in dmrs.keys():
-            if verbose > 0:
-                print("DMRs sorted by diff.Methy")
-            dmrs["abs_diff.Methy"]  = dmrs["diff.Methy"].abs()
-            dmrs = dmrs.sort_values(by="abs_diff.Methy", ascending=False)
-        else:
-            if verbose > 0:
-                print("Could not find any statistics to sort DMRs")
-
-        # Add "ctype" column with the given cancer name
-        if not ("ctype" in dmrs.columns):
-            dmrs["ctype"] = [cancer] * dmrs.shape[0]
-
-        # Select top n dmrs based on
-        if n_dmrs > 0:
-            if verbose > 0:
-                print(f"{n_dmrs} are selected based on the statistics")
-            list_dmrs = list()
-            for c in dmrs["ctype"].unique(): #  For the case when multiple cell types are given
-                ctype_dmrs = dmrs[dmrs["ctype"]==c]
-                if ctype_dmrs.shape[0] > n_dmrs:
-                    list_dmrs.append(ctype_dmrs[:n_dmrs])
-                else:
-                    list_dmrs.append(ctype_dmrs)
-            dmrs = pd.concat(list_dmrs)
-            del list_dmrs
-
-        # Newly assign dmr label from 0
-        if "dmr_id" not in dmrs.keys():
-            dmrs["dmr_id"] = range(len(dmrs))
-
-        # Save DMRs into all_dmrs
-        all_dmrs[cancer] = dmrs
-        # Save DMRs in a new file
-        dmrs.to_csv(fp_dmr, sep="\t", index=False)
-        if verbose > 2:
-            print(dmrs.head())
-
+    # Sort by statistics if available
+    if "areaStat" in dmrs.keys():
         if verbose > 0:
-            print(f"Number of DMRs to extract sequence reads: {len(dmrs)}")
-
-    # check whether the input is a file or a file list
-    if ( not sc_dataset ) and ( not input_file ):
-        ValueError("Please provide either a list of input files or a file path. Both are given.")
-    elif ( not sc_dataset ):
-        # one input file in the list
-        sc_files = pd.DataFrame({input_file: "T"})
-        if use_file_name:
-            if verbose > 0:
-                print('When only one input file is give, file name cannot be used for the train-test split. We set use_file_name=False. Read names will be used for the split')
-            use_file_name = False
-    elif ( not input_file ):
-        # Collect train data (single-cell samples)
-        train_sc_samples = []
-        sc_files = pd.read_csv(sc_dataset,header=None,sep=",")
-
-        if ( len(sc_files) < 10 ) and ( use_file_name ):
-            warnings.warn("We do not encourage to users to set use_file_name=True with the number of input bam files < 10. It can cause an unexpected error.")
+            print("DMRs sorted by areaStat")
+        dmrs["abs_areaStat"]  = dmrs["areaStat"].abs()
+        dmrs = dmrs.sort_values(by="abs_areaStat", ascending=False)
+    elif "diff.Methy" in dmrs.keys():
+        if verbose > 0:
+            print("DMRs sorted by diff.Methy")
+        dmrs["abs_diff.Methy"]  = dmrs["diff.Methy"].abs()
+        dmrs = dmrs.sort_values(by="abs_diff.Methy", ascending=False)
     else:
-        raise ValueError("Either a list of input files or a file path must be given.")
+        if verbose > 0:
+            print("Could not find any statistics to sort DMRs")
 
-    # Collect reads from the .bam files
-    df_reads = list()
+    # Add "ctype" column with the given cancer name
+    if not ("ctype" in dmrs.columns):
+        dmrs["ctype"] = [cancer] * dmrs.shape[0]
+
+    # Select top n dmrs based on
+    if n_dmrs > 0:
+        if verbose > 0:
+            print(f"{n_dmrs} are selected based on the statistics")
+        list_dmrs = list()
+        for c in dmrs["ctype"].unique(): #  For the case when multiple cell types are given
+            ctype_dmrs = dmrs[dmrs["ctype"]==c]
+            if ctype_dmrs.shape[0] > n_dmrs:
+                list_dmrs.append(ctype_dmrs[:n_dmrs])
+            else:
+                list_dmrs.append(ctype_dmrs)
+        dmrs = pd.concat(list_dmrs)
+        del list_dmrs
+
+    # Newly assign dmr label from 0
+    if "dmr_id" not in dmrs.keys():
+        dmrs["dmr_id"] = range(len(dmrs))
+
+    # Save DMRs into all_dmrs
+    all_dmrs[cancer] = dmrs
+    # Save DMRs in a new file
+    dmrs.to_csv(fp_dmr, sep="\t", index=False)
+    if verbose > 2:
+        print(dmrs.head())
+
+    if verbose > 0:
+        print(f"Number of DMRs to extract sequence reads: {len(dmrs)}")
+
+    return all_dmrs
+
+def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir):
     tqdm_bar = tqdm(total=len(sc_files), 
                     desc="Collecting reads from .bam files")
     
@@ -372,8 +298,96 @@ def finetune_data_generate(
                 header=not(os.path.exists(output_dir+"all_reads.csv")),
                 index=False
             )
-
         tqdm_bar.update()
+
+def finetune_data_generate(
+        f_dmr: Dict[str,str],
+        output_dir: str,
+        f_ref: str,
+        sc_dataset: str = None,
+        input_file: str = None,
+        n_mers: int = 3,
+        split_ratio: float = None,
+        train_valid_test_ratio: List[float] = None,
+        use_file_name: bool = False,
+        n_dmrs: int = -1,
+        n_cores: int = 1,
+        seed: int = 950410,
+        ignore_sex_chromo: bool = True,
+        methyl_caller: str = "bismark",
+        verbose: int = 2,
+        read_extract_sequences_func: Optional[callable] = None,
+        use_existed_files: bool = False
+    ):
+    
+    # Check f_dmr
+    if not isinstance(f_dmr, dict):
+        raise TypeError("f_dmr must be a dictionary of DMR files, with key=cancer type, value=dmr file name.")
+
+    # Setup random seed
+    random.seed(seed)
+    np.random.seed(seed)
+
+    # Check split ratio 
+    if (split_ratio is not None) and (train_valid_test_ratio is not None):
+        raise ValueError("Only either of 'split_ratio (float)' or train_valid_test_ratio 'List[float]' must be given.")
+    elif split_ratio is not None:
+        split_ratios = [split_ratio, 1-split_ratio, 0.0]
+    elif train_valid_test_ratio is not None:
+        if ( np.sum(train_valid_test_ratio) != 1.0 ) or \
+            ( len(train_valid_test_ratio) != 3 ):
+            raise ValueError("'train_valid_test_ratio' must be a list with 3 float values whose sum is 1.0")
+        split_ratios = train_valid_test_ratio
+    else:
+        split_ratios = [1.0, 0.0, 0.0] # output must be one single file
+
+    # Setup output files
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+
+    # Reference genome
+    record_iter = SeqIO.parse(f_ref, "fasta")
+
+    # Save the reference genome into a dictionary with chr as a key value
+    dict_ref = dict()
+    for r in record_iter:
+        dict_ref[str(r.id)] = str(r.seq.upper())
+    del record_iter
+
+    # Save DMRs into a csv to avoid OOM
+    all_dmrs = f_dmr
+    for cancer, dmr_file in f_dmr.items():
+        fp_dmr = os.path.join(output_dir, f"{cancer}_dmrs.csv")
+        if use_existed_files and os.path.exists(fp_dmr):
+            all_dmrs[cancer] = pd.read_csv(dmr_file, sep=",", index_col=None)
+        else:
+            dmr_loader(all_dmrs, cancer, dmr_file, output_dir, ignore_sex_chromo, dict_ref, verbose, n_dmrs)
+
+    # check whether the input is a file or a file list
+    if ( not sc_dataset ) and ( not input_file ):
+        ValueError("Please provide either a list of input files or a file path. Both are given.")
+    elif ( not sc_dataset ):
+        # one input file in the list
+        sc_files = pd.DataFrame({input_file: "T"})
+        if use_file_name:
+            if verbose > 0:
+                print('When only one input file is give, file name cannot be used for the train-test split. We set use_file_name=False. Read names will be used for the split')
+            use_file_name = False
+    elif ( not input_file ):
+        # Collect train data (single-cell samples)
+        train_sc_samples = []
+        sc_files = pd.read_csv(sc_dataset,header=None,sep=",")
+
+        if ( len(sc_files) < 10 ) and ( use_file_name ):
+            warnings.warn("We do not encourage to users to set use_file_name=True with the number of input bam files < 10. It can cause an unexpected error.")
+    else:
+        raise ValueError("Either a list of input files or a file path must be given.")
+
+    # Collect reads from the .bam files
+    if use_existed_files and os.path.exists(output_dir+"data.csv"):
+        print('"data.csv" already exists. Jump over generating phase.')
+    else:
+        reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir)
     
     if not (split_ratios[0] < 1.0):
         if verbose > 1:
@@ -382,7 +396,7 @@ def finetune_data_generate(
 
     if verbose > 1:
         print("Generating fine-tuning data in chunks...")
-    df_reads = pd.read_csv(output_dir+"data.csv", sep=",", header=True, chunksize=500000)
+    df_reads = pd.read_csv(output_dir+"data.csv", sep=",", chunksize=500000)
     fp_train_seq = os.path.join(output_dir, "train_seq.csv")
     fp_test_seq = os.path.join(output_dir, "test_seq.csv")
     fp_val_seq = os.path.join(output_dir, "val_seq.csv")
