@@ -248,6 +248,7 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 
 				if n_seqs is not None and len(self.offsets) >= n_seqs:
 					break
+		#print(f"DMRs: {self.set_dmr_labels}\nCtypes: {self.set_ctype_labels}")
 		print("Total number of sequences : ", len(self.offsets))
 
 	def __len__(self):

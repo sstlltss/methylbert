@@ -18,6 +18,8 @@ n_mers=3
 batch_size=4
 num_workers=2
 output_path = "tmp/fine_tune/"
+#train_data_loader = None
+#test_data_loader = None
 
 # Creat a look-up table
 tokenizer = MethylVocab(n_mers)
@@ -46,6 +48,7 @@ train_data_loader = DataLoader(train_dataset, batch_size= batch_size,
 test_data_loader = DataLoader(test_dataset, batch_size= batch_size, 
                               num_workers= num_workers, pin_memory=False,  
                               shuffle=False)
+
 trainer = MethylBertFinetuneTrainerWithClassifier(
                       len(tokenizer), 
                       save_path=output_path, 
@@ -60,7 +63,6 @@ trainer = MethylBertFinetuneTrainerWithClassifier(
                       loss="cross_entropy",
                       ignore_mismatched_sizes=True)
 trainer.load("hanyangii/methylbert_hg19_4l")
-trainer.create_model("tmp/config.json")
 trainer.train(steps=10)
 df_train  = pd.read_csv("tmp/fine_tune/train.csv", sep="\t")
 df_train.head()

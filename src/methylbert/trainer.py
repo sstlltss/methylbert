@@ -374,8 +374,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                  id2label: dict = {},
                  label2id: dict = {},
                  **kwargs):
-        super().__init__(self,
-                         vocab_size, 
+        super().__init__(vocab_size, 
                          save_path, 
                          train_dataloader, 
                          test_dataloader,
@@ -393,17 +392,19 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
         '''
         Create a new MethylBERT model from the configuration(save to file)
         '''
+        print(f"in create_model:\nnum_labels={self.train_data.dataset.num_ctypes()}")
         config = MethylBERTConfig.from_pretrained(config_file,
-            num_dmrs=self.train_data.dataset.num_dmrs(),
             num_labels=self.train_data.dataset.num_ctypes(),
             output_attentions=True,
             output_hidden_states=True,
             hidden_dropout_prob=0.01,
             vocab_size = len(self.train_data.dataset.vocab),
             loss=self._config.loss)
+        print(f"in create_model:\nnum_labels={self.train_data.dataset.num_ctypes()}")
 
         self.bert = MethylBertEmbeddedDMRWithClassifier(config=config,
-                                          seq_len=self.train_data.dataset.seq_len)
+                                          seq_len=self.train_data.dataset.seq_len,
+                                          num_dmrs=self.train_data.dataset.num_dmrs())
 
         # Initialize the BERT Language Model, with BERT model
         self._setup_model()
@@ -431,7 +432,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                                             input_ids = data["dna_seq"],
                                             token_type_ids=data["methyl_seq"],
                                             dmr_labels = data["dmr_label"],
-                                            ctype_label=data["ctype"])
+                                            ctype_label=data["ctype_label"])
 
                 loss = mask_lm_output["loss"].mean().item() if "cuda" in self.device.type else mask_lm_output["loss"].item()
                 mean_loss += loss/len(data_loader)
@@ -441,7 +442,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
 
                 predict_res["dmr_label"].append(data["dmr_label"].detach().cpu())
                 predict_res["pred_ctype_label"].append(torch.argmax(mask_lm_output["classification_logits"], dim=-1).detach().cpu())
-                predict_res["ctype_label"].append(data["ctype"].detach().cpu())
+                predict_res["ctype_label"].append(data["ctype_label"].detach().cpu())
 
                 if return_logits:
                     logits.append(mask_lm_output["classification_logits"].detach().cpu().numpy())
@@ -513,7 +514,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
             for i, batch in enumerate(data_loader):
                 # 0. batch_data will be sent into the device(GPU or cpu)
                 data = {key: value.to(self.device) for key, value in batch.items() if type(value) != list}
-
+                print(data.keys())
                 start = time.time()
                 with torch.autocast(device_type="cuda" if self._config.with_cuda else "cpu",
                                     enabled=self._config.amp):
@@ -521,7 +522,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                                             input_ids=data["dna_seq"],
                                             token_type_ids=data["methyl_seq"],
                                             dmr_labels=data["dmr_label"],
-                                            ctype_label=data["ctype"])
+                                            ctype_label=data["ctype_label"])
                 loss = mask_lm_output["loss"]
 
                 # Concatenate predicted sequences for the evaluation
@@ -675,13 +676,16 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                 print(os.path.dirname(dir_path)+"/read_classification_model.pickle is not found.")
         else:
             self.bert = MethylBertEmbeddedDMRWithClassifier.from_pretrained(dir_path,
-                num_labels=self.train_data.dataset.num_dmrs() if not n_dmrs else n_dmrs,
+                num_labels=self.train_data.dataset.num_ctypes(),
                 output_attentions=True,
                 output_hidden_states=True,
                 seq_len = self.train_data.dataset.seq_len,
+                num_dmrs=self.train_data.dataset.num_dmrs(),
                 loss=self._config.loss,
                 id2label=self.id2label,
-                label2id=self.label2id
+                label2id=self.label2id,
+                hidden_dropout_prob=0.01,
+                vocab_size = len(self.train_data.dataset.vocab)
                 )
 
         self._setup_model()

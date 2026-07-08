@@ -23,11 +23,11 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
     config_class = MethylBERTConfig
     base_model_prefix = "methylbert"
 
-    def __init__(self, config, seq_len=150):
+    def __init__(self, config, seq_len=150, num_dmrs=-1):
         # from pretrained - calls the init
         super().__init__(config)
         self.num_labels = config.num_labels
-        self.num_dmrs = config.num_dmrs
+        self.num_dmrs = num_dmrs
 
         if config.loss not in ["focal_bce","cross_entropy"]:
             raise ValueError(f"loss must be bce or focal_bce. {config.loss} is given.")
