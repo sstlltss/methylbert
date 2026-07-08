@@ -210,7 +210,7 @@ class MethylBertPretrainDataset(MethylBertDataset):
 		return inputs, labels, masked_index
 
 class MethylBertFinetuneDataset(MethylBertDataset):
-	def __init__(self, f_path: str, vocab: MethylVocab, seq_len: int, n_cores: int=10, n_seqs = None):
+	def __init__(self, f_path: str, vocab: MethylVocab, seq_len: int, n_seqs = None):
 		'''
 		MethylBERT dataset
 
@@ -220,8 +220,6 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 			MethylVocab object to convert DNA and methylation pattern sequences
 		seq_len: int
 			Length for the processed sequences
-		n_cores: int
-			Number of cores for multiprocessing
 		n_seqs: int
 			Number of sequences to subset the input (default: None, do not make a subset)
 
@@ -229,30 +227,33 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 		self.vocab = vocab
 		self.seq_len = seq_len
 		self.f_path = f_path
+		self.offsets = []
+		self.set_dmr_labels = set()
+		self.set_ctype_labels = set()
 
 		# Read all text files and convert the raw sequence into tokens
-		with open(self.f_path, "r") as f_input:
-			raw_seqs = f_input.read().splitlines()
+		with open(self.f_path, "r") as f:
+			self.headers = f.readline().rstrip("\n").split("\t")
+			pos_dmr_label = self.headers.index("dmr_label")
+			pos_ctype = self.headers.index("ctype")
+			while True:
+				pos = f.tell()
+				line = f.readline()
+				if not line:
+					break
+				fields = line.rstrip("\n").split("\t")
+				self.offsets.append(pos)
+				self.set_dmr_labels.add(int(fields[pos_dmr_label]))
+				self.set_ctype_labels.add(fields[pos_ctype])
 
-		# Check if there's a header
-		self.headers = raw_seqs[0].split("\t")
-		raw_seqs = raw_seqs[1:]
+				if n_seqs is not None and len(self.offsets) >= n_seqs:
+					break
+		print("Total number of sequences : ", len(self.offsets))
 
-		if n_seqs is not None:
-			raw_seqs = raw_seqs[:n_seqs]
-		print("Total number of sequences : ", len(raw_seqs))
-
-		# Multiprocessing for the sequence tokenisation
-		with mp.Pool(n_cores) as pool:
-			self.lines = pool.map(partial(_parse_line,
-								   headers=self.headers), raw_seqs)
-			del raw_seqs
-		gc.collect()
-		self.set_dmr_labels = set([l["dmr_label"] for l in self.lines])
-
-		self.ctype_label_count = self._get_cls_num()
-		print("# of reads in each label: ", self.ctype_label_count)
-
+	def __len__(self):
+		return len(self.offsets)
+	
+	"""
 	def _get_cls_num(self):
 		# unique labels
 		ctype_labels=[l["ctype_label"] for l in self.lines]
@@ -261,15 +262,25 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 		for l in labels:
 			label_count[l] = sum(np.array(ctype_labels) == l)
 		return label_count
+	"""
 
 	def num_dmrs(self):
 		return max(len(self.set_dmr_labels), max(self.set_dmr_labels)+1) # +1 is for the label 0
-
+	
+	def num_ctypes(self):
+		return len(self.set_ctype_labels)
+	"""
 	def subset_data(self, n_seq):
 		self.lines = self.lines[:n_seq]
-
+	"""
+	
 	def __getitem__(self, index):
-		line = deepcopy(self.lines[index])
+		if not hasattr(self, "_fp"):
+			print(f"Creating file handle: {self.f_path}...")
+			self._fp = open(self.f_path, "r")
+		self._fp.seek(self.offsets[index])
+		raw = self._fp.readline().rstrip("\n")
+		line = _parse_line(raw, headers=self.headers)
 
 		item = _line2tokens_finetune(
 			l=line,

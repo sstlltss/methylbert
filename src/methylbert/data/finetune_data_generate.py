@@ -142,7 +142,7 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame,
             processed_reads = processed_reads.assign(dmr_ctype = dmr["ctype"],
                                                      dmr_label = dmr["dmr_id"])
             return processed_reads
-
+    print(f"dmrs:{dmrs.head}")
     if ncores > 1:
         with mp.Pool(ncores) as pool:
             # Convert read sequences to k-mer sequences
@@ -229,21 +229,20 @@ def dmr_loader(all_dmrs, cancer, dmr_file, output_dir, ignore_sex_chromo, dict_r
     # Save DMRs into all_dmrs
     all_dmrs[cancer] = dmrs
     # Save DMRs in a new file
-    dmrs.to_csv(fp_dmr, sep="\t", index=False)
+    dmrs.to_csv(fp_dmr, sep=",", index=False)
     if verbose > 2:
         print(dmrs.head())
 
     if verbose > 0:
         print(f"Number of DMRs to extract sequence reads: {len(dmrs)}")
 
-    return all_dmrs
-
-def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir):
+def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir, files_lbl_map):
     tqdm_bar = tqdm(total=len(sc_files), 
                     desc="Collecting reads from .bam files")
-    
+    is_first_write = True
+    data_file = os.path.join(output_dir,"data.csv")
+    open(data_file, 'w').close()
     # file/read name - cell type pair for stratification in train test split
-    files_lbl_map = {} 
     for f_sc in sc_files.itertuples():
         f_sc_bam = f_sc[1]  # bam file path
         if f_sc[2] == "PC":
@@ -285,19 +284,25 @@ def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n
         if extracted_reads.shape[0] > 0:
             if use_file_name:
                 filename = os.path.basename(f_sc_bam)
-                if len(sc_files.itertuples) > 1:
+                if sc_files.shape[0] > 1:
                     files_lbl_map[filename] = extracted_reads['ctype'][0]  
                 extracted_reads["filename"] = filename
             else:
                 for name, ctype in zip(extracted_reads['name'], 
                                     extracted_reads['ctype']):
                     files_lbl_map[name] = ctype
+
+            # clean "data.csv" if exists
+            if is_first_write:
+                print(f"Header:{extracted_reads.columns}")
             extracted_reads.to_csv(
                 output_dir+"data.csv",
                 mode="a",
-                header=not(os.path.exists(output_dir+"all_reads.csv")),
+                header=is_first_write,
                 index=False
             )
+            if extracted_reads.shape[0] > 0:
+                is_first_write = False
         tqdm_bar.update()
 
 def finetune_data_generate(
@@ -359,11 +364,12 @@ def finetune_data_generate(
     for cancer, dmr_file in f_dmr.items():
         fp_dmr = os.path.join(output_dir, f"{cancer}_dmrs.csv")
         if use_existed_files and os.path.exists(fp_dmr):
-            all_dmrs[cancer] = pd.read_csv(dmr_file, sep=",", index_col=None)
+            all_dmrs[cancer] = pd.read_csv(fp_dmr, sep=",", index_col=None)
         else:
             dmr_loader(all_dmrs, cancer, dmr_file, output_dir, ignore_sex_chromo, dict_ref, verbose, n_dmrs)
 
     # check whether the input is a file or a file list
+    sc_files = {}
     if ( not sc_dataset ) and ( not input_file ):
         ValueError("Please provide either a list of input files or a file path. Both are given.")
     elif ( not sc_dataset ):
@@ -384,22 +390,20 @@ def finetune_data_generate(
         raise ValueError("Either a list of input files or a file path must be given.")
 
     # Collect reads from the .bam files
+    files_lbl_map = {}
     if use_existed_files and os.path.exists(output_dir+"data.csv"):
         print('"data.csv" already exists. Jump over generating phase.')
+        files_lbl_map = dict(zip(sc_files[0].apply(os.path.basename).to_list(), sc_files[1].to_list()))
     else:
-        reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir)
-    
+        print(f"all_dmrs:{all_dmrs.keys}")
+        reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir, files_lbl_map)
+    print(files_lbl_map)
     if not (split_ratios[0] < 1.0):
         if verbose > 1:
             print("Finished.")
             exit()
-
     if verbose > 1:
         print("Generating fine-tuning data in chunks...")
-    df_reads = pd.read_csv(output_dir+"data.csv", sep=",", chunksize=500000)
-    fp_train_seq = os.path.join(output_dir, "train_seq.csv")
-    fp_test_seq = os.path.join(output_dir, "test_seq.csv")
-    fp_val_seq = os.path.join(output_dir, "val_seq.csv")
 
     # Split the data into train and train/valid/test by patient/bam file
     split_key = "filename" if use_file_name else "name"
@@ -410,6 +414,7 @@ def finetune_data_generate(
         test_size=val_test_size, random_state=seed,
         stratify=list(files_lbl_map.values())
     )
+    print(f"train_files:{train_files}\ntest_files:{test_files}")
     if split_ratios[-1] > 0.0:
         fp_val_seq = os.path.join(output_dir, "val_seq.csv")
         test_size = split_ratios[2] / (split_ratios[1] + split_ratios[2])
@@ -424,6 +429,14 @@ def finetune_data_generate(
     is_first_test = True
     is_first_train = True
     is_first_val = True
+
+    df_reads = pd.read_csv(output_dir+"data.csv", sep=",", chunksize=500000)
+    fp_train_seq = os.path.join(output_dir, "train_seq.csv")
+    fp_test_seq = os.path.join(output_dir, "test_seq.csv")
+    fp_val_seq = os.path.join(output_dir, "val_seq.csv")
+    open(fp_train_seq,'w').close()
+    open(fp_test_seq, 'w').close()
+    open(fp_val_seq, 'w').close()
 
     for chunk in df_reads:
         # Integrate all reads and shuffle
