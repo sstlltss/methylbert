@@ -34,12 +34,12 @@ else:
     raise ValueError('Can\'t find any DMRs. Please check "tmp/dmrs.txt"!')
 
 # Load the data files int a data set object
-train_dataset = MethylBertFinetuneDataset("tmp/train_seq.csv", 
+train_dataset = MethylBertFinetuneDataset("tmp/sample_train.csv", 
                                           tokenizer, 
                                           seq_len=seq_len,
                                           id2label=id2label,
                                           label2id=label2id)
-test_dataset = MethylBertFinetuneDataset("tmp/test_seq.csv", 
+test_dataset = MethylBertFinetuneDataset("tmp/sample_test.csv", 
                                          tokenizer,
                                          seq_len=seq_len,
                                          id2label=id2label,

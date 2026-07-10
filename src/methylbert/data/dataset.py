@@ -39,8 +39,13 @@ def _parse_line(l, headers, label2id):
 		raise ValueError(f"Only {len(headers)} elements are in the input file header, whereas the line has {len(l)} elements.")
 	l["ctype_label"] = int(label2id[l["ctype"]])
 	l["dmr_label"] = int(l["dmr_label"])
+	l["methyl_seq"] = l["methyl_seq"][:150].ljust(150)
+	l["dna_seq"] = l["dna_seq"][:150].ljust(150)
 
-	return l
+	return {"dna_seq": l["dna_seq"],
+		 	 "methyl_seq": l["methyl_seq"],
+			 "ctype_label": l["ctype_label"],
+			 "dmr_label": l["dmr_label"]}
 
 
 def _line2tokens_finetune(l, tokenizer, max_len=150, headers=None):
@@ -306,7 +311,9 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 			for k, v in item.items():
 				if torch.is_tensor(v):
 					print(f"  {k}: {v.shape}")
+				elif type(v)==type(""):
+					print(f"  {k}: {len(v)}")
 				else:
-					print(f"  {k}: {type(v)}")
+					print(f"  {k}: {v}, {type(v)}")
 		return item
 
