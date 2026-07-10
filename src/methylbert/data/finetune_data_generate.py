@@ -360,7 +360,7 @@ def finetune_data_generate(
     del record_iter
 
     # Save DMRs into a csv to avoid OOM
-    all_dmrs = f_dmr
+    all_dmrs = f_dmr.copy()
     for cancer, dmr_file in f_dmr.items():
         fp_dmr = os.path.join(output_dir, f"{cancer}_dmrs.csv")
         if use_existed_files and os.path.exists(fp_dmr):
