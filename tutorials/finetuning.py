@@ -16,7 +16,7 @@ set_seed(42)
 seq_len=150
 n_mers=3
 batch_size=4
-num_workers=2
+num_workers=0
 output_path = "tmp/fine_tune/"
 #train_data_loader = None
 #test_data_loader = None
@@ -36,10 +36,14 @@ else:
 # Load the data files int a data set object
 train_dataset = MethylBertFinetuneDataset("tmp/train_seq.csv", 
                                           tokenizer, 
-                                          seq_len=seq_len)
+                                          seq_len=seq_len,
+                                          id2label=id2label,
+                                          label2id=label2id)
 test_dataset = MethylBertFinetuneDataset("tmp/test_seq.csv", 
                                          tokenizer,
-                                         seq_len=seq_len) 
+                                         seq_len=seq_len,
+                                         id2label=id2label,
+                                         label2id=label2id) 
 
 # Load the data into a data loader
 train_data_loader = DataLoader(train_dataset, batch_size= batch_size, 

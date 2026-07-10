@@ -26,7 +26,7 @@ def _line2tokens_pretrain(l, tokenizer, max_len=120):
 	else:
 		return tokened + [[tokenizer.pad_index] for k in range(max_len-len(tokened))]
 
-def _parse_line(l, headers):
+def _parse_line(l, headers, label2id):
 	# Check the header
 	if not all([h in headers for h in ["dna_seq", "methyl_seq", "ctype", "dmr_ctype", "dmr_label"]]):
 		raise ValueError("The header must contain dna_seq, methyl_seq, ctype, dmr_ctype, dmr_label")
@@ -37,9 +37,7 @@ def _parse_line(l, headers):
 		l = {k: v for k, v in zip(headers, l)}
 	else:
 		raise ValueError(f"Only {len(headers)} elements are in the input file header, whereas the line has {len(l)} elements.")
-
-	# Cell-type label is binary (whether the cell type corresponds to the DMR cell type)
-	l["ctype_label"] = int(l["ctype"] == l["dmr_ctype"])
+	l["ctype_label"] = int(label2id[l["ctype"]])
 	l["dmr_label"] = int(l["dmr_label"])
 
 	return l
@@ -210,7 +208,7 @@ class MethylBertPretrainDataset(MethylBertDataset):
 		return inputs, labels, masked_index
 
 class MethylBertFinetuneDataset(MethylBertDataset):
-	def __init__(self, f_path: str, vocab: MethylVocab, seq_len: int, n_seqs = None):
+	def __init__(self, f_path: str, vocab: MethylVocab, seq_len: int, n_seqs = None, id2label: dict={}, label2id: dict={}):
 		'''
 		MethylBERT dataset
 
@@ -230,6 +228,8 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 		self.offsets = []
 		self.set_dmr_labels = set()
 		self.set_ctype_labels = set()
+		self.id2label = id2label
+		self.label2id = label2id
 
 		# Read all text files and convert the raw sequence into tokens
 		with open(self.f_path, "r") as f:
@@ -281,15 +281,14 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 			self._fp = open(self.f_path, "r")
 		self._fp.seek(self.offsets[index])
 		raw = self._fp.readline().rstrip("\n")
-		line = _parse_line(raw, headers=self.headers)
+		line = _parse_line(raw, headers=self.headers, label2id=self.label2id)
 
 		item = _line2tokens_finetune(
 			l=line,
 			tokenizer=self.vocab, max_len=self.seq_len, headers=self.headers)
-
 		item["dna_seq"] = torch.squeeze(torch.tensor(np.array(item["dna_seq"], dtype=np.int32)))
 		item["methyl_seq"] = torch.squeeze(torch.tensor(np.array(item["methyl_seq"], dtype=np.int8)))
-
+		
 		# Special tokens (SOS, EOS)
 		end = torch.where(item["dna_seq"]!=self.vocab.pad_index)[0].tolist()[-1] + 1 # end of the read
 		if end < item["dna_seq"].shape[0]:
@@ -298,8 +297,16 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 		else:
 			item["dna_seq"][-1] = self.vocab.eos_index
 			item["methyl_seq"][-1] = 2
+			
 		item["dna_seq"] = torch.cat((torch.tensor([self.vocab.sos_index]), item["dna_seq"]))
 		item["methyl_seq"] = torch.cat((torch.tensor([2]), item["methyl_seq"]))
 
+		if index < 5:
+			print(f"Sample {index}")
+			for k, v in item.items():
+				if torch.is_tensor(v):
+					print(f"  {k}: {v.shape}")
+				else:
+					print(f"  {k}: {type(v)}")
 		return item
 

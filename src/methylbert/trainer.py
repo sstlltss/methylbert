@@ -426,7 +426,6 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
             for i, batch in enumerate(data_loader):
                 # 0. batch_data will be sent into the device(GPU or cpu)
                 data = {key: value.to(self.device) for key, value in batch.items() if type(value) != list}
-
                 with torch.autocast(device_type="cuda" if self._config.with_cuda else "cpu", enabled=self._config.amp):
                     mask_lm_output = self.model.forward(step=self.step,
                                             input_ids = data["dna_seq"],
