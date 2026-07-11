@@ -47,19 +47,22 @@ def _parse_line(l, headers):
 
 def _line2tokens_finetune(l, tokenizer, max_len=150, headers=None):
 	# parsed line!
-
+	#max_len -= 1
 	l["dna_seq"] = l["dna_seq"].split(" ")
 	l["dna_seq"] = [[f] for f in tokenizer.to_seq(l["dna_seq"])]
 	l["methyl_seq"] = [int(m) for m in l["methyl_seq"]]
 
-	if len(l["dna_seq"]) > max_len:
+	if len(l["dna_seq"]) >= max_len:
 		l["dna_seq"] = l["dna_seq"][:max_len]
-		l["methyl_seq"] = l["methyl_seq"][:max_len]
 	else:
 		cur_seq_len=len(l["dna_seq"])
 		l["dna_seq"] = l["dna_seq"]+[[tokenizer.pad_index] for k in range(max_len-cur_seq_len)]
-		l["methyl_seq"] = l["methyl_seq"] + [2 for k in range(max_len-cur_seq_len)]
 
+	if len(l["methyl_seq"]) >= max_len:
+		l["methyl_seq"] = l["methyl_seq"][:max_len]
+	else:
+		methyl_seq_len = len(l["methyl_seq"])
+		l["methyl_seq"] = l["methyl_seq"] + [2 for k in range(max_len-methyl_seq_len)]
 	return l
 
 class MethylBertDataset(Dataset):
@@ -229,30 +232,31 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 		self.vocab = vocab
 		self.seq_len = seq_len
 		self.f_path = f_path
+		self.offsets = []
+		self.set_dmr_labels = set()
+		self.set_ctype_labels = set()
 
 		# Read all text files and convert the raw sequence into tokens
-		with open(self.f_path, "r") as f_input:
-			raw_seqs = f_input.read().splitlines()
+		with open(self.f_path, "r") as f:
+			self.headers = f.readline().rstrip("\n").split("\t")
+			pos_dmr_label = self.headers.index("dmr_label")
+			pos_ctype = self.headers.index("ctype")
+			while True:
+				pos = f.tell()
+				line = f.readline()
+				if not line:
+					break
+				fields = line.rstrip("\n").split("\t")
+				self.offsets.append(pos)
+				self.set_dmr_labels.add(int(fields[pos_dmr_label]))
+				self.set_ctype_labels.add(fields[pos_ctype])
 
-		# Check if there's a header
-		self.headers = raw_seqs[0].split("\t")
-		raw_seqs = raw_seqs[1:]
+				if n_seqs is not None and len(self.offsets) >= n_seqs:
+					break
+		#print(f"DMRs: {self.set_dmr_labels}\nCtypes: {self.set_ctype_labels}")
+		print("Total number of sequences : ", len(self.offsets))
 
-		if n_seqs is not None:
-			raw_seqs = raw_seqs[:n_seqs]
-		print("Total number of sequences : ", len(raw_seqs))
-
-		# Multiprocessing for the sequence tokenisation
-		with mp.Pool(n_cores) as pool:
-			self.lines = pool.map(partial(_parse_line,
-								   headers=self.headers), raw_seqs)
-			del raw_seqs
-		gc.collect()
-		self.set_dmr_labels = set([l["dmr_label"] for l in self.lines])
-
-		self.ctype_label_count = self._get_cls_num()
-		print("# of reads in each label: ", self.ctype_label_count)
-
+	"""
 	def _get_cls_num(self):
 		# unique labels
 		ctype_labels=[l["ctype_label"] for l in self.lines]
@@ -261,23 +265,33 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 		for l in labels:
 			label_count[l] = sum(np.array(ctype_labels) == l)
 		return label_count
+	"""
 
+	def __len__(self):
+		return len(self.offsets)
+	
 	def num_dmrs(self):
 		return max(len(self.set_dmr_labels), max(self.set_dmr_labels)+1) # +1 is for the label 0
 
+	"""
 	def subset_data(self, n_seq):
 		self.lines = self.lines[:n_seq]
+	"""
 
 	def __getitem__(self, index):
-		line = deepcopy(self.lines[index])
+		if not hasattr(self, "_fp"):
+			print(f"Creating file handle: {self.f_path}...")
+			self._fp = open(self.f_path, "r")
+		self._fp.seek(self.offsets[index])
+		raw = self._fp.readline().rstrip("\n")
+		line = _parse_line(raw, headers=self.headers)
 
 		item = _line2tokens_finetune(
 			l=line,
 			tokenizer=self.vocab, max_len=self.seq_len, headers=self.headers)
-
 		item["dna_seq"] = torch.squeeze(torch.tensor(np.array(item["dna_seq"], dtype=np.int32)))
 		item["methyl_seq"] = torch.squeeze(torch.tensor(np.array(item["methyl_seq"], dtype=np.int8)))
-
+		
 		# Special tokens (SOS, EOS)
 		end = torch.where(item["dna_seq"]!=self.vocab.pad_index)[0].tolist()[-1] + 1 # end of the read
 		if end < item["dna_seq"].shape[0]:
@@ -286,8 +300,17 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 		else:
 			item["dna_seq"][-1] = self.vocab.eos_index
 			item["methyl_seq"][-1] = 2
+			
 		item["dna_seq"] = torch.cat((torch.tensor([self.vocab.sos_index]), item["dna_seq"]))
 		item["methyl_seq"] = torch.cat((torch.tensor([2]), item["methyl_seq"]))
-
+		"""
+		if index < 5:
+			print(f"Sample {index}")
+			for k, v in item.items():
+				if torch.is_tensor(v):
+					print(f"  {k}: {v.shape}")
+				elif type(v)==type(""):
+					print(f"  {k}: {len(v)}")
+				else:
+					print(f"  {k}: {v}, {type(v)}")"""
 		return item
-
