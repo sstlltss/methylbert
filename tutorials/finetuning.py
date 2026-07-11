@@ -15,11 +15,11 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 set_seed(42)
 seq_len=150
 n_mers=3
-batch_size=4
+batch_size=16
 num_workers=0
 output_path = "tmp/fine_tune/"
-#train_data_loader = None
-#test_data_loader = None
+train_data_loader = None
+test_data_loader = None
 
 # Creat a look-up table
 tokenizer = MethylVocab(n_mers)
@@ -34,12 +34,12 @@ else:
     raise ValueError('Can\'t find any DMRs. Please check "tmp/dmrs.txt"!')
 
 # Load the data files int a data set object
-train_dataset = MethylBertFinetuneDataset("tmp/sample_train.csv", 
+train_dataset = MethylBertFinetuneDataset("tmp/train_seq.csv", 
                                           tokenizer, 
                                           seq_len=seq_len,
                                           id2label=id2label,
                                           label2id=label2id)
-test_dataset = MethylBertFinetuneDataset("tmp/sample_test.csv", 
+test_dataset = MethylBertFinetuneDataset("tmp/test_seq.csv", 
                                          tokenizer,
                                          seq_len=seq_len,
                                          id2label=id2label,
