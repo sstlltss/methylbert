@@ -39,8 +39,6 @@ def _parse_line(l, headers, label2id):
 		raise ValueError(f"Only {len(headers)} elements are in the input file header, whereas the line has {len(l)} elements.")
 	l["ctype_label"] = int(label2id[l["ctype"]])
 	l["dmr_label"] = int(l["dmr_label"])
-	l["methyl_seq"] = l["methyl_seq"][:150].ljust(150)
-	l["dna_seq"] = l["dna_seq"][:150].ljust(150)
 
 	return {"dna_seq": l["dna_seq"],
 		 	 "methyl_seq": l["methyl_seq"],
@@ -57,10 +55,14 @@ def _line2tokens_finetune(l, tokenizer, max_len=150, headers=None):
 
 	if len(l["dna_seq"]) > max_len:
 		l["dna_seq"] = l["dna_seq"][:max_len]
-		l["methyl_seq"] = l["methyl_seq"][:max_len]
 	else:
 		cur_seq_len=len(l["dna_seq"])
 		l["dna_seq"] = l["dna_seq"]+[[tokenizer.pad_index] for k in range(max_len-cur_seq_len)]
+		
+	if len(l["methyl_seq"]) > max_len:
+		l["methyl_seq"] = l["methyl_seq"][:max_len]
+	else:
+		cur_seq_len=len(l["methyl_seq"])
 		l["methyl_seq"] = l["methyl_seq"] + [2 for k in range(max_len-cur_seq_len)]
 
 	return l
