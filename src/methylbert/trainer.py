@@ -71,6 +71,8 @@ class MethylBertTrainer(object):
         if self._config.with_cuda and torch.cuda.device_count() < 1:
             print("No detected GPU device. Load the model on CPU")
             self._config.with_cuda = False
+            print("No detected GPU. Exit.")
+            exit()
         print("The model is loaded on %s"%("GPU" if self._config.with_cuda else "CPU"))
         self.device = torch.device("cuda:0" if self._config.with_cuda else "cpu")
 
@@ -513,7 +515,6 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
             for i, batch in enumerate(data_loader):
                 # 0. batch_data will be sent into the device(GPU or cpu)
                 data = {key: value.to(self.device) for key, value in batch.items() if type(value) != list}
-                print(data.keys())
                 start = time.time()
                 with torch.autocast(device_type="cuda" if self._config.with_cuda else "cpu",
                                     enabled=self._config.amp):
@@ -609,6 +610,11 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                 steps_progress_bar.update()
 
                 if steps == self.step:
+                    print("Save the last model at 'last/'.")
+                    last_path = os.path.join(self.save_path, "/last")
+                    if not os.path.exists(last_path):
+                        os.mkdir(last_path)
+                    self.save(last_path)
                     break
                 local_step+=1
 

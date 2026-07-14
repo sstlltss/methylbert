@@ -17,7 +17,7 @@ seq_len=150
 n_mers=3
 batch_size=16
 num_workers=0
-output_path = "tmp/fine_tune/"
+output_path = "test5/"
 train_data_loader = None
 test_data_loader = None
 
@@ -34,12 +34,12 @@ else:
     raise ValueError('Can\'t find any DMRs. Please check "tmp/dmrs.txt"!')
 
 # Load the data files int a data set object
-train_dataset = MethylBertFinetuneDataset("tmp/train_seq.csv", 
+train_dataset = MethylBertFinetuneDataset("tmp/sample_train_200k.csv", 
                                           tokenizer, 
                                           seq_len=seq_len,
                                           id2label=id2label,
                                           label2id=label2id)
-test_dataset = MethylBertFinetuneDataset("tmp/test_seq.csv", 
+test_dataset = MethylBertFinetuneDataset("tmp/sample_test_200k.csv", 
                                          tokenizer,
                                          seq_len=seq_len,
                                          id2label=id2label,
@@ -60,20 +60,22 @@ trainer = MethylBertFinetuneTrainerWithClassifier(
                       test_dataloader=test_data_loader,
                       id2label=id2label,
                       label2id=label2id,
-                      lr=1e-4, with_cuda=True, 
+                      lr=2e-5,
+                      with_cuda=True, 
                       log_freq=1,
                       #eval_freq=10, #activate this only when you want to evaluate the model with test_data_loader
                       warmup_step=3,
                       loss="cross_entropy",
                       ignore_mismatched_sizes=True)
+
 trainer.load("hanyangii/methylbert_hg19_4l")
-trainer.train(steps=10)
-df_train  = pd.read_csv("tmp/fine_tune/train.csv", sep="\t")
+trainer.train(steps=3000)
+df_train  = pd.read_csv(output_path+"train.csv", sep="\t")
 df_train.head()
-df_eval  = pd.read_csv("tmp/fine_tune/eval.csv", sep="\t")
+df_eval  = pd.read_csv(output_path+"eval.csv", sep="\t")
 df_eval.head()
 sns.lineplot(data=df_train, x="step", y="loss", label="train loss")
 sns.lineplot(data=df_eval, x="step", y="loss", label="eval loss")
-plt.savefig("loss.jpg")
+plt.savefig(output_path+"loss.jpg")
 sns.lineplot(data=df_train, x="step", y="lr", label="learning rate", color="m")
-plt.savefig("learning_rate.jpg")
+plt.savefig(output_path+"learning_rate.jpg")

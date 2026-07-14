@@ -308,14 +308,5 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 		item["dna_seq"] = torch.cat((torch.tensor([self.vocab.sos_index]), item["dna_seq"]))
 		item["methyl_seq"] = torch.cat((torch.tensor([2]), item["methyl_seq"]))
 
-		if index < 5:
-			print(f"Sample {index}")
-			for k, v in item.items():
-				if torch.is_tensor(v):
-					print(f"  {k}: {v.shape}")
-				elif type(v)==type(""):
-					print(f"  {k}: {len(v)}")
-				else:
-					print(f"  {k}: {v}, {type(v)}")
 		return item
 
