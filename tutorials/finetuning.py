@@ -17,9 +17,10 @@ seq_len=150
 n_mers=3
 batch_size=16
 num_workers=0
-output_path = "test5/"
+output_path = "test7/"
 train_data_loader = None
 test_data_loader = None
+enable_dmr = False
 
 # Creat a look-up table
 tokenizer = MethylVocab(n_mers)
@@ -60,13 +61,15 @@ trainer = MethylBertFinetuneTrainerWithClassifier(
                       test_dataloader=test_data_loader,
                       id2label=id2label,
                       label2id=label2id,
+                      enable_dmr=enable_dmr,
                       lr=2e-5,
                       with_cuda=True, 
                       log_freq=1,
                       #eval_freq=10, #activate this only when you want to evaluate the model with test_data_loader
-                      warmup_step=3,
+                      warmup_step=200,
                       loss="cross_entropy",
-                      ignore_mismatched_sizes=True)
+                      ignore_mismatched_sizes=True,
+                      eval_freq=500)
 
 trainer.load("hanyangii/methylbert_hg19_4l")
 trainer.train(steps=3000)
@@ -77,5 +80,5 @@ df_eval.head()
 sns.lineplot(data=df_train, x="step", y="loss", label="train loss")
 sns.lineplot(data=df_eval, x="step", y="loss", label="eval loss")
 plt.savefig(output_path+"loss.jpg")
-sns.lineplot(data=df_train, x="step", y="lr", label="learning rate", color="m")
-plt.savefig(output_path+"learning_rate.jpg")
+sns.lineplot(data=df_eval, x="step", y="ctype_acc", label="Accuracy")
+plt.savefig(output_path+"acc.jpg")

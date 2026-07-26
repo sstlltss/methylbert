@@ -23,12 +23,19 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
     config_class = MethylBERTConfig
     base_model_prefix = "methylbert"
 
-    def __init__(self, config, seq_len=150, num_dmrs=-1):
+    def __init__(self, config, seq_len=150, num_dmrs=-1, enable_dmr=True):
         # from pretrained - calls the init
         super().__init__(config)
         self.num_labels = config.num_labels
         self.num_dmrs = num_dmrs
 
+        self.enable_dmr = enable_dmr
+        self.hidden_size = config.hidden_size + self.enable_dmr
+        self.layer_size = 768 + self.enable_dmr
+        if self.enable_dmr:
+            print("DMR embedding is enabled.")
+        else:
+            print("DMR embedding is disabled.")
         if config.loss not in ["focal_bce","cross_entropy"]:
             raise ValueError(f"loss must be bce or focal_bce. {config.loss} is given.")
 
@@ -37,7 +44,7 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
         self.bert = BertModel(config)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.read_classifier = nn.Sequential(
-            nn.Linear((config.hidden_size+1)*(seq_len+1), seq_len+1),
+            nn.Linear((self.hidden_size)*(seq_len+1), seq_len+1),
             nn.Dropout(0.05),#config.hidden_dropout_prob),
             nn.ReLU(),
             nn.LayerNorm(seq_len+1, eps=config.layer_norm_eps),
@@ -46,9 +53,10 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
 
         self.seq_len = seq_len
 
-        self.dmr_encoder = nn.Sequential(
-            nn.Embedding(num_embeddings=self.num_dmrs, embedding_dim = seq_len+1),
-        )
+        if self.enable_dmr:
+            self.dmr_encoder = nn.Sequential(
+                nn.Embedding(num_embeddings=self.num_dmrs, embedding_dim = seq_len+1),
+            )
         
         self.init_weights()
 
@@ -69,7 +77,8 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
         self.read_classifier.load_state_dict(torch.load(pretrained_model_name_or_path, map_location=device))
 
     def from_pretrained_dmr_encoder(self, pretrained_model_name_or_path, device="cpu"):
-        self.dmr_encoder.load_state_dict(torch.load(pretrained_model_name_or_path, map_location=device))
+        if self.enable_dmr:
+            self.dmr_encoder.load_state_dict(torch.load(pretrained_model_name_or_path, map_location=device))
 
     def forward(
         self,
@@ -96,14 +105,14 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
         sequence_output = outputs[0]
         sequence_output = self.dropout(sequence_output)
 
-        #DMR info 
-        encoded_dmr = self.dmr_encoder(dmr_labels.view(-1))
+        #DMR info
+        if self.enable_dmr:
+            encoded_dmr = self.dmr_encoder(dmr_labels.view(-1))
+            sequence_output =  torch.cat((sequence_output, encoded_dmr.unsqueeze(-1)), axis=-1)
 
-        sequence_output =  torch.cat((sequence_output, encoded_dmr.unsqueeze(-1)), axis=-1)
+        ctype_logits = self.read_classifier(sequence_output.view(-1,(self.seq_len+1)*self.layer_size))
 
-        # 先不改试试看：sequence_output.view(-1,sequence_output.shape[0])
-        ctype_logits = self.read_classifier(sequence_output.view(-1,(self.seq_len+1)*769))
-        
+
         loss = self.classification_loss_fct(ctype_logits.view(-1, self.num_labels), 
                                             ctype_label.view(-1).long())
         #ctype_logits = ctype_logits.softmax(dim=1)

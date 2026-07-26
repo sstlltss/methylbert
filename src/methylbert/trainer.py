@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, auc, roc_curve
+from sklearn.metrics import accuracy_score, auc, roc_curve, f1_score
 from torch.cuda.amp import GradScaler
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import LambdaLR
@@ -375,6 +375,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                  test_dataloader: DataLoader = None,
                  id2label: dict = {},
                  label2id: dict = {},
+                 enable_dmr: bool = True,
                  **kwargs):
         super().__init__(vocab_size, 
                          save_path, 
@@ -383,6 +384,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                          **kwargs)
         self.id2label = id2label
         self.label2id = label2id
+        self.enable_dmr = enable_dmr
 
     def summary(self):
         '''
@@ -401,12 +403,14 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
             output_hidden_states=True,
             hidden_dropout_prob=0.01,
             vocab_size = len(self.train_data.dataset.vocab),
-            loss=self._config.loss)
+            loss=self._config.loss,
+            enable_dmr = self.enable_dmr)
         print(f"in create_model:\nnum_labels={self.train_data.dataset.num_ctypes()}")
 
         self.bert = MethylBertEmbeddedDMRWithClassifier(config=config,
                                           seq_len=self.train_data.dataset.seq_len,
-                                          num_dmrs=self.train_data.dataset.num_dmrs())
+                                          num_dmrs=self.train_data.dataset.num_dmrs()
+                                          )
 
         # Initialize the BERT Language Model, with BERT model
         self._setup_model()
@@ -486,7 +490,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
             os.remove(self.f_eval)
 
         with open(self.f_eval, "w") as f_perform:
-            f_perform.write("step\tloss\tctype_acc\n")
+            f_perform.write("step\tloss\tctype_acc\tf1_macro\tf1_weighted\n")
 
 
         # Set up a learning rate scheduler
@@ -562,9 +566,10 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                     # Evaluation
                     eval_pred, eval_loss = self._eval_iteration(self.test_data)
                     eval_acc = self._acc(eval_pred["pred_ctype_label"], eval_pred["ctype_label"])
-
+                    eval_f1_macro = f1_score(eval_pred["pred_ctype_label"], eval_pred["ctype_label"], average="macro")
+                    eval_f1_weighted = f1_score(eval_pred["pred_ctype_label"], eval_pred["ctype_label"], average="weighted")
                     with open(self.f_eval, "a") as f_perform:
-                        f_perform.write("\t".join([str(self.step), str(eval_loss), str(eval_acc)]) +"\n")
+                        f_perform.write("\t".join([str(self.step), str(eval_loss), str(eval_acc), str(eval_f1_macro), str(eval_f1_weighted)]) +"\n")
 
                     del eval_pred
 
@@ -610,11 +615,8 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                 steps_progress_bar.update()
 
                 if steps == self.step:
-                    print("Save the last model at 'last/'.")
-                    last_path = os.path.join(self.save_path, "/last")
-                    if not os.path.exists(last_path):
-                        os.mkdir(last_path)
-                    self.save(last_path)
+                    print(f"Save the last model at {self.save_path}/last.")
+                    self.save(os.path.join(self.save_path, "last"))
                     break
                 local_step+=1
 
@@ -665,7 +667,8 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                 loss=self._config.loss,
                 num_labels=n_dmrs,
                 id2label=self.id2label,
-                label2id=self.label2id
+                label2id=self.label2id,
+                enable_dmr=self.enable_dmr
                 )
 
             try:
@@ -690,7 +693,8 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                 id2label=self.id2label,
                 label2id=self.label2id,
                 hidden_dropout_prob=0.01,
-                vocab_size = len(self.train_data.dataset.vocab)
+                vocab_size = len(self.train_data.dataset.vocab),
+                enable_dmr=self.enable_dmr
                 )
 
         self._setup_model()
