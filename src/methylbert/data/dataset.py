@@ -307,6 +307,7 @@ class MethylBertFinetuneDataset(MethylBertDataset):
 			
 		item["dna_seq"] = torch.cat((torch.tensor([self.vocab.sos_index]), item["dna_seq"]))
 		item["methyl_seq"] = torch.cat((torch.tensor([2]), item["methyl_seq"]))
-
+		#print(f"item:{item}")
+		#exit()
 		return item
 

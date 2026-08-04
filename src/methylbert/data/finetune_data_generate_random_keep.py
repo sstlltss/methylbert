@@ -55,7 +55,7 @@ def kmers(seq: str, k: int=3):
     return converted_seq, methyl
 
 
-def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame, ncores: int=1, methyl_caller: str = "bismark"):
+def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame, ncores: int=1, methyl_caller: str = "bismark", keep_rate=None):
     '''
         Extract reads including methylation patterns overlapping with DMRs
         and convert those into 3-mer sequences
@@ -129,10 +129,12 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame,
         return processed_reads
 
     @globalize
-    def _get_methylseq(dmr, bam_file_path: str, k: int, methyl_caller: str):
+    def _get_methylseq(dmr, bam_file_path: str, k: int, methyl_caller: str, keep_rate: Dict):
         '''
             Return a dictionary of DNA seq, cell type and methylation seq processed in a 3-mer seq
         '''
+        if random.random() > keep_rate[dmr["ctype"]]:
+            return None
         aln = pysam.AlignmentFile(bam_file_path, "rb")
         
         processed_reads = _reads_overlapping(aln,
@@ -142,6 +144,7 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame,
             processed_reads = processed_reads.assign(dmr_ctype = dmr["ctype"],
                                                      dmr_label = dmr["dmr_id"])
             return processed_reads
+        
     print(f"dmrs:{dmrs.head}")
     if ncores > 1:
         with mp.Pool(ncores) as pool:
@@ -151,7 +154,7 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame,
                             dmrs.to_dict("records"))
     else:
         seqs = [_get_methylseq(dmr, bam_file_path = bam_file_path, k=k,
-                               methyl_caller = methyl_caller)
+                               methyl_caller = methyl_caller, keep_rate=keep_rate)
                 for dmr in dmrs.to_dict("records")]
 
     # Filter None values that means no overlapping read with the given DMR
@@ -236,7 +239,7 @@ def dmr_loader(all_dmrs, cancer, dmr_file, output_dir, ignore_sex_chromo, dict_r
     if verbose > 0:
         print(f"Number of DMRs to extract sequence reads: {len(dmrs)}")
 
-def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir, files_lbl_map):
+def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir, files_lbl_map, keep_rate):
     tqdm_bar = tqdm(total=len(sc_files), 
                     desc="Collecting reads from .bam files")
     is_first_write = True
@@ -245,14 +248,13 @@ def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n
     # file/read name - cell type pair for stratification in train test split
     for f_sc in sc_files.itertuples():
         f_sc_bam = f_sc[1]  # bam file path
-        if f_sc[2] != "PC":
-            continue
         f_sc_dmr = all_dmrs[f_sc[2]]    # get dmr file from the cell type of the bam file
 
         if read_extract_sequences_func is None:
             extracted_reads = read_extract(
                 f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
-                ncores=n_cores, methyl_caller=methyl_caller
+                ncores=n_cores, methyl_caller=methyl_caller,
+                keep_rate=keep_rate
             )
         else:
             # custom function
@@ -299,7 +301,8 @@ def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n
                 output_dir+"data.csv",
                 mode="a",
                 header=is_first_write,
-                index=False
+                index=False,
+                sep="\t"
             )
             if extracted_reads.shape[0] > 0:
                 is_first_write = False
@@ -322,7 +325,8 @@ def finetune_data_generate(
         methyl_caller: str = "bismark",
         verbose: int = 2,
         read_extract_sequences_func: Optional[callable] = None,
-        use_existed_files: bool = False
+        use_existed_files: bool = False,
+        keep_rate: Dict[str,float]=None
     ):
     
     # Check f_dmr
@@ -395,8 +399,8 @@ def finetune_data_generate(
         print('"data.csv" already exists. Jump over generating phase.')
         files_lbl_map = dict(zip(sc_files[0].apply(os.path.basename).to_list(), sc_files[1].to_list()))
     else:
-        print(f"all_dmrs:{all_dmrs.keys}")
-        reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir, files_lbl_map)
+        print(f"all_dmrs:{all_dmrs.keys()}")
+        reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n_cores, methyl_caller, verbose, use_file_name, output_dir, files_lbl_map, keep_rate)
     print(files_lbl_map)
     if not (split_ratios[0] < 1.0):
         if verbose > 1:
@@ -430,7 +434,7 @@ def finetune_data_generate(
     is_first_train = True
     is_first_val = True
 
-    df_reads = pd.read_csv(output_dir+"data.csv", sep=",", chunksize=500000)
+    df_reads = pd.read_csv(output_dir+"data.csv", sep="\t", chunksize=500000)
     fp_train_seq = os.path.join(output_dir, "train_seq.csv")
     fp_test_seq = os.path.join(output_dir, "test_seq.csv")
     fp_val_seq = os.path.join(output_dir, "val_seq.csv")
