@@ -4,6 +4,7 @@ from methylbert.data.vocab import MethylVocab
 from methylbert.data.dataset import MethylBertFinetuneDataset
 from methylbert.trainer import MethylBertFinetuneTrainerWithClassifier
 import os
+import json
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -12,7 +13,6 @@ import torch
 warnings.filterwarnings("ignore") # Ignore warnings for a clear notebook
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-set_seed(88)
 seq_len=150
 n_mers=3
 batch_size=16
@@ -24,20 +24,22 @@ enable_dmr = True
 lr=2e-5
 warmup_step=200
 steps=3000
+seed = 88
+set_seed(seed)
 
-with open(output_path + "logs.txt", "w") as f:
-    f.write("seed: 88\n" \
-    "seq_len=150\n" \
-    "n_mers=3\n" \
-    "batch_size=16\n" \
-    "num_workers=0\n" \
-    "output_path = 'test13/'\n" \
-    "train_data_loader = None\n" \
-    "test_data_loader = None\n" \
-    "enable_dmr = True\n" \
-    "lr=2e-5\n" \
-    "warmup_step=200\n" \
-    "steps=3000")
+log = {"seed": seed,
+       "seq_len": seq_len,
+       "n_mers": n_mers,
+       "batch_size": batch_size,
+       "num_workers": num_workers,
+       "output_path": output_path,
+       "enable_dmr": enable_dmr,
+       "lr": lr,
+       "warmup_step": warmup_step,
+       "steps": steps
+       }
+with open("log.json", "w") as f:
+    f.write(json.dumps(log))
 
 # Creat a look-up table
 tokenizer = MethylVocab(n_mers)
@@ -95,6 +97,7 @@ df_eval  = pd.read_csv(output_path+"eval.csv", sep="\t")
 df_eval.head()
 sns.lineplot(data=df_train, x="step", y="loss", label="train loss")
 sns.lineplot(data=df_eval, x="step", y="loss", label="eval loss")
+plt.title(f"warm up: {warmup_step}, DMR: {enable_dmr}, seed: {seed}")
 plt.savefig(output_path+"loss.jpg")
 sns.lineplot(data=df_eval, x="step", y="ctype_acc", label="Accuracy")
 plt.savefig(output_path+"acc.jpg")

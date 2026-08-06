@@ -55,7 +55,7 @@ def kmers(seq: str, k: int=3):
     return converted_seq, methyl
 
 
-def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame, ncores: int=1, methyl_caller: str = "bismark", keep_rate=None):
+def read_extract(bam_file_path: str, dict_ref: dict, k: int, ctype:str, dmrs: pd.DataFrame, ncores: int=1, methyl_caller: str = "bismark", keep_rate=None):
     '''
         Extract reads including methylation patterns overlapping with DMRs
         and convert those into 3-mer sequences
@@ -129,11 +129,11 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame,
         return processed_reads
 
     @globalize
-    def _get_methylseq(dmr, bam_file_path: str, k: int, methyl_caller: str, keep_rate: Dict):
+    def _get_methylseq(dmr, bam_file_path: str, k: int, methyl_caller: str, keep_rate: Dict, ctype:str):
         '''
             Return a dictionary of DNA seq, cell type and methylation seq processed in a 3-mer seq
         '''
-        if random.random() > keep_rate[dmr["ctype"]]:
+        if random.random() > keep_rate[ctype]:
             return None
         aln = pysam.AlignmentFile(bam_file_path, "rb")
         
@@ -154,7 +154,7 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, dmrs: pd.DataFrame,
                             dmrs.to_dict("records"))
     else:
         seqs = [_get_methylseq(dmr, bam_file_path = bam_file_path, k=k,
-                               methyl_caller = methyl_caller, keep_rate=keep_rate)
+                               methyl_caller = methyl_caller, keep_rate=keep_rate, ctype=ctype)
                 for dmr in dmrs.to_dict("records")]
 
     # Filter None values that means no overlapping read with the given DMR
@@ -254,13 +254,13 @@ def reads_collector(sc_files, all_dmrs, read_extract_sequences_func, dict_ref, n
             extracted_reads = read_extract(
                 f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
                 ncores=n_cores, methyl_caller=methyl_caller,
-                keep_rate=keep_rate
+                keep_rate=keep_rate, ctype=f_sc[2]
             )
         else:
             # custom function
             extracted_reads = read_extract_sequences_func(
                 f_sc_bam, dict_ref, k=3, dmrs=f_sc_dmr,
-                ncores=n_cores, methyl_caller=methyl_caller
+                ncores=n_cores, methyl_caller=methyl_caller, ctype=f_sc[2]
             )
 
         if extracted_reads is None:
