@@ -115,6 +115,7 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, ctype:str, dmrs: pd
             # Add processed results as a tag
             read.setTag("RF", value=" ".join(s), replace=True) # reference sequence
             read.setTag("ME", value="".join(m), replace=True) # methylation pattern sequence
+            read.setTag("RG", value=None, replace=True)
 
             # Process back to a dictionary
             read_tags = {t:v for t, v in read.get_tags()}
