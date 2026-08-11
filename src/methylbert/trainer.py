@@ -7,7 +7,10 @@ import pandas as pd
 import torch
 import torch.cuda.amp as amp
 import torch.nn as nn
-from sklearn.metrics import accuracy_score, auc, roc_curve, f1_score
+from sklearn.metrics import accuracy_score, auc, roc_curve, f1_score, classification_report, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.preprocessing import label_binarize
+import matplotlib.pyplot as plt
+from scipy.special import softmax
 from torch.cuda.amp import GradScaler
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import LambdaLR
@@ -385,6 +388,9 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
         self.id2label = id2label
         self.label2id = label2id
         self.enable_dmr = enable_dmr
+        self.eval_times = 0
+        self.best_f1 = 0
+        self.early_stop = False
 
     def summary(self):
         '''
@@ -415,7 +421,58 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
         # Initialize the BERT Language Model, with BERT model
         self._setup_model()
 
-    def _eval_iteration(self, data_loader: DataLoader, return_logits: bool = False):
+    # save preditcions, classification report, confusion matrix and roc curve to files
+    def save_eval_to_files(self, eval_pred, sample_name, verbose):
+        """
+        save preditcions, classification report, confusion matrix and roc curve to files.
+        :param eval_pred: Dictionary, including "pred_ctype_label", "ctype_label", "logits"
+        :param eval_loss: float, mean loss of the prediction
+        :return: None(files are saved)
+        """
+        id_pred = [self.id2label[c] for c in eval_pred["pred_ctype_label"]]
+        id_true = [self.id2label[c] for c in eval_pred["ctype_label"]]
+
+        # save classification report
+        eval_report = classification_report(y_pred=id_pred, y_true=id_true)
+        with open(os.path.join(self.save_path,f"report_step_{self.step}.txt"),"w") as f:
+            f.write(eval_report)
+        if verbose > 0:
+            print(f"Classification report saved as: {os.path.join(self.save_path,f'report_step_{self.step}.csv')}")
+        
+        # save raw prediction result
+        eval_pred_df = pd.DataFrame({"true_label": id_true, "pred_label": id_pred, "sample": sample_name})
+        for i in sorted(self.id2label.keys()):
+            eval_pred_df[f"{self.id2label[i]}"] = eval_pred["logits"][:,i]
+        eval_pred_df.to_csv(os.path.join(self.save_path,f"predictions_step_{self.step}.csv"), index=False)
+        if verbose > 0:
+            print(f"Predictions saved as: {os.path.join(self.save_path,f'predictions_step_{self.step}.csv')}")
+
+        # save confusion matrix as figure
+        cm_labels = sorted(set(id_true))
+        cm = confusion_matrix(y_pred=id_pred, y_true=id_true)
+        disp = ConfusionMatrixDisplay(cm, display_labels=cm_labels)
+        disp.plot(cmap="Blues")
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.save_path,f"confusion_matrix_step_{self.step}.png"))
+        plt.close()
+        if verbose > 0:
+            print(f"Confusion matrix saved as: {os.path.join(self.save_path,f'confusion_matrix_step_{self.step}.png')}")
+
+        # ROC & AUC
+        binary_true = label_binarize(id_true,classes=np.unique(id_true))
+        plt.figure(figsize=(6,6))
+        for i in range(eval_pred["logits"].shape[1]):
+            fpr, tpr, _ = roc_curve(binary_true[:, i],eval_pred["logits"][:, i])
+            roc_auc = auc(fpr, tpr)
+            plt.plot(fpr,tpr,label=f"Class {i} (AUC={roc_auc:.3f})")
+        plt.plot([0,1],[0,1],"k--")
+        plt.legend()
+        plt.savefig(os.path.join(self.save_path,f"roc_step_{self.step}.png"),dpi=300,bbox_inches="tight")
+        plt.close()
+        if verbose > 0:
+            print(f"Confusion matrix saved as: {os.path.join(self.save_path,f'roc_step_{self.step}.png')}")
+
+    def _eval_iteration(self, data_loader: DataLoader):
         """
         loop over the data_loader for eval/test
 
@@ -423,13 +480,14 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
         :return: DataFrame,
         """
 
-        predict_res = {"dmr_label":[], "pred_ctype_label":[], "ctype_label":[]}
-        logits = list()
+        predict_res = {"dmr_label":[], "pred_ctype_label":[], "ctype_label":[], "logits":[]}
 
         mean_loss = 0
         self.model.eval()
+        filenames = []
         with torch.no_grad():
             for i, batch in enumerate(data_loader):
+                filenames.extend(batch["filename"])
                 # 0. batch_data will be sent into the device(GPU or cpu)
                 data = {key: value.to(self.device) for key, value in batch.items() if type(value) != list}
                 with torch.autocast(device_type="cuda" if self._config.with_cuda else "cpu", enabled=self._config.amp):
@@ -447,10 +505,8 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
 
                 predict_res["dmr_label"].append(data["dmr_label"].detach().cpu())
                 predict_res["pred_ctype_label"].append(torch.argmax(mask_lm_output["classification_logits"], dim=-1).detach().cpu())
+                predict_res["logits"].append(mask_lm_output["classification_logits"].detach().cpu().numpy())
                 predict_res["ctype_label"].append(data["ctype_label"].detach().cpu())
-
-                if return_logits:
-                    logits.append(mask_lm_output["classification_logits"].detach().cpu().numpy())
 
                 del mask_lm_output
                 del data
@@ -458,13 +514,22 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
         predict_res["dmr_label"] = np.concatenate(predict_res["dmr_label"],  axis=0)
         predict_res["ctype_label"] = np.concatenate(predict_res["ctype_label"],  axis=0)
         predict_res["pred_ctype_label"] = np.concatenate(predict_res["pred_ctype_label"], axis=0)
+        predict_res["logits"] = np.concatenate(predict_res["logits"], axis=0)
 
+        f1 = f1_score(y_true=predict_res["ctype_label"], y_pred=predict_res["pred_ctype_label"], average="macro")
+        if f1 > self.best_f1+0.01:
+            self.best_f1 = f1
+            self.save(self.save_path)
+            self.eval_times = 0
+        else:
+            self.eval_times += 1
+
+        if self.eval_times >= 3:
+            self.early_stop = True
+            print("Early stopping...")
         self.model.train()
 
-        if not return_logits:
-            return predict_res, mean_loss
-        else:
-            return predict_res, mean_loss, np.concatenate(return_logits, axis=0)
+        return predict_res, mean_loss, filenames
         
     def _iteration(self, steps, data_loader, verbose = 1):
         """
@@ -490,7 +555,7 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
             os.remove(self.f_eval)
 
         with open(self.f_eval, "w") as f_perform:
-            f_perform.write("step\tloss\tctype_acc\tf1_macro\tf1_weighted\n")
+            f_perform.write("step\tloss\tctype_acc\n")
 
 
         # Set up a learning rate scheduler
@@ -514,9 +579,13 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
         duration = 0
         epoch_progress_bar = tqdm(total=epochs, desc="Training...")
         for epoch in range(epochs):
+            if self.early_stop:
+                break
             steps_progress_bar = tqdm(total=min(steps, len(data_loader)),
                                       desc=f"Epoch {epoch+1}/{epochs}")
             for i, batch in enumerate(data_loader):
+                if self.early_stop:
+                    break
                 # 0. batch_data will be sent into the device(GPU or cpu)
                 data = {key: value.to(self.device) for key, value in batch.items() if type(value) != list}
                 start = time.time()
@@ -532,11 +601,9 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
                 # Concatenate predicted sequences for the evaluation
                 train_prediction_res["dmr_label"].append(data["dmr_label"].detach().cpu())
 
-
                 # Cell-type classification
                 train_prediction_res["pred_ctype_label"].append(np.argmax(mask_lm_output["classification_logits"].cpu().detach(), axis=-1))
                 train_prediction_res["ctype_label"].append(data["ctype_label"].detach().cpu())
-
 
                 # Calculate loss and back-propagation
                 loss = mask_lm_output["loss"].mean() if "cuda" in self.device.type else mask_lm_output["loss"]
@@ -564,26 +631,30 @@ class MethylBertFinetuneTrainerWithClassifier(MethylBertTrainer):
 
                 if (local_step+1) % self._config.eval_freq == 0 or local_step == 0:
                     # Evaluation
-                    eval_pred, eval_loss = self._eval_iteration(self.test_data)
-                    eval_acc = self._acc(eval_pred["pred_ctype_label"], eval_pred["ctype_label"])
-                    eval_f1_macro = f1_score(eval_pred["pred_ctype_label"], eval_pred["ctype_label"], average="macro")
-                    eval_f1_weighted = f1_score(eval_pred["pred_ctype_label"], eval_pred["ctype_label"], average="weighted")
+                    eval_pred, eval_loss, filenames = self._eval_iteration(self.test_data)
+                    if self.early_stop:
+                        break
+                    self.save_eval_to_files(eval_pred, filenames, verbose)
+                    
+                    # save loss
+                    acc = self._acc(eval_pred["pred_ctype_label"], eval_pred["ctype_label"])
                     with open(self.f_eval, "a") as f_perform:
-                        f_perform.write("\t".join([str(self.step), str(eval_loss), str(eval_acc), str(eval_f1_macro), str(eval_f1_weighted)]) +"\n")
-
+                        f_perform.write("\t".join([str(self.step), str(eval_loss), str(acc)]) +"\n")
                     del eval_pred
+                    
 
                     if self.step % self._config.log_freq == 0:
                         if verbose > 0:
                             print("\nTrain Step %d iter - loss : %f / lr : %f"%(self.step, global_step_loss, self.optim.param_groups[0]["lr"]))
                             print(f"Running time for iter = {duration}")
-
+                            
+                    """
                     if self.min_loss > eval_loss:
                         if verbose > 0:
                             print("Step %d loss (%f) is lower than the current min loss (%f). Save the model at %s"%(self.step, eval_loss, self.min_loss, self.save_path))
                         self.save(self.save_path)
                         self.min_loss = eval_loss
-
+                    """
                     # For saving an interim model to track the training
                     if ( type(self._config.save_freq) == int ) and (self.step % self._config.save_freq == 0):
                         step_save_dir=self.save_path.replace("bert.model", "bert.model_step%d"%(self.step))

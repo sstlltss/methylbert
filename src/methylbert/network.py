@@ -115,7 +115,7 @@ class MethylBertEmbeddedDMRWithClassifier(BertPreTrainedModel):
 
         loss = self.classification_loss_fct(ctype_logits.view(-1, self.num_labels), 
                                             ctype_label.view(-1).long())
-        #ctype_logits = ctype_logits.softmax(dim=1)
+        ctype_logits = ctype_logits.softmax(dim=1)
 
         outputs = {"loss": loss,
                     "dmr_logits":sequence_output,

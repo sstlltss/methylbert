@@ -28,8 +28,8 @@ def _line2tokens_pretrain(l, tokenizer, max_len=120):
 
 def _parse_line(l, headers, label2id):
 	# Check the header
-	if not all([h in headers for h in ["dna_seq", "methyl_seq", "ctype", "dmr_ctype", "dmr_label"]]):
-		raise ValueError("The header must contain dna_seq, methyl_seq, ctype, dmr_ctype, dmr_label")
+	if not all([h in headers for h in ["dna_seq", "methyl_seq", "ctype", "dmr_ctype", "dmr_label", "filename"]]):
+		raise ValueError("The header must contain dna_seq, methyl_seq, ctype, dmr_ctype, dmr_label, filename")
 
 	# Separate n-mers tokens and labels from each line
 	l = l.split("\t")  # don't add strip; some columns may be None
@@ -43,7 +43,8 @@ def _parse_line(l, headers, label2id):
 	return {"dna_seq": l["dna_seq"],
 		 	 "methyl_seq": l["methyl_seq"],
 			 "ctype_label": l["ctype_label"],
-			 "dmr_label": l["dmr_label"]}
+			 "dmr_label": l["dmr_label"],
+			 "filename": l["filename"]}
 
 
 def _line2tokens_finetune(l, tokenizer, max_len=150, headers=None):

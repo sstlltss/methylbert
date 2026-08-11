@@ -10,23 +10,44 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import warnings
 import torch
+import sys
+import argparse
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
 warnings.filterwarnings("ignore") # Ignore warnings for a clear notebook
 torch.multiprocessing.set_sharing_strategy('file_system')
 
-seq_len=150
-n_mers=3
-batch_size=16
-num_workers=0
-output_path = "test13/"
 train_data_loader = None
 test_data_loader = None
-enable_dmr = True
-lr=2e-5
-warmup_step=200
-steps=3000
-seed = 88
-set_seed(seed)
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--seq_len", type=int, default=150)
+parser.add_argument("--n_mers", type=int, default=3)
+parser.add_argument("--batch_size", type=int, default=16)
+parser.add_argument("--num_workers", type=int, default=0)
+parser.add_argument("--warmup_step", type=int, default=50)
+parser.add_argument("--steps", type=int, default=6000)
+parser.add_argument("--lr", type=float, default=2e-5)
+parser.add_argument("--fold", type=int, default=1)
+parser.add_argument("--enable_dmr", type=bool, default=True)
+parser.add_argument("--output_path", type=str, required=True)
+parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--eval_freq", type=int, default=100)
+args = parser.parse_args()
+
+seq_len = args.seq_len
+n_mers = args.n_mers
+batch_size = args.batch_size
+num_workers = args.num_workers
+warmup_step = args.warmup_step
+steps = args.steps
+lr = args.lr
+fold = args.fold
+enable_dmr = args.enable_dmr
+output_path = args.output_path
+seed = args.seed
+eval_freq = args.eval_freq
+
+set_seed(seed)
 log = {"seed": seed,
        "seq_len": seq_len,
        "n_mers": n_mers,
@@ -36,7 +57,9 @@ log = {"seed": seed,
        "enable_dmr": enable_dmr,
        "lr": lr,
        "warmup_step": warmup_step,
-       "steps": steps
+       "steps": steps,
+       "fold": fold,
+       "eval_freq": eval_freq
        }
 with open("log.json", "w") as f:
     f.write(json.dumps(log))
@@ -54,12 +77,14 @@ else:
     raise ValueError('Can\'t find any DMRs. Please check "tmp/dmrs.txt"!')
 
 # Load the data files int a data set object
-train_dataset = MethylBertFinetuneDataset("tmp/train_data_intersect.csv", 
+train_data_path = f"data{fold}_train.csv"
+test_data_path = f"data{fold}_test.csv"
+train_dataset = MethylBertFinetuneDataset(train_data_path, 
                                           tokenizer, 
                                           seq_len=seq_len,
                                           id2label=id2label,
                                           label2id=label2id)
-test_dataset = MethylBertFinetuneDataset("tmp/test_data_intersect.csv", 
+test_dataset = MethylBertFinetuneDataset(test_data_path, 
                                          tokenizer,
                                          seq_len=seq_len,
                                          id2label=id2label,
@@ -87,7 +112,7 @@ trainer = MethylBertFinetuneTrainerWithClassifier(
                       warmup_step=warmup_step,
                       loss="cross_entropy",
                       ignore_mismatched_sizes=True,
-                      eval_freq=500)
+                      eval_freq=eval_freq)
 
 trainer.load("hanyangii/methylbert_hg19_4l")
 trainer.train(steps=steps)
@@ -98,6 +123,26 @@ df_eval.head()
 sns.lineplot(data=df_train, x="step", y="loss", label="train loss")
 sns.lineplot(data=df_eval, x="step", y="loss", label="eval loss")
 plt.title(f"warm up: {warmup_step}, DMR: {enable_dmr}, seed: {seed}")
-plt.savefig(output_path+"loss.jpg")
 sns.lineplot(data=df_eval, x="step", y="ctype_acc", label="Accuracy")
 plt.savefig(output_path+"acc.jpg")
+plt.close()
+
+for i in range(0,steps, eval_freq):
+    step = i if i==0 else i-1
+    df_pred = pd.read_csv(output_path+f"predictions_step_{step}.csv")
+    classes = list(label2id.keys())
+    sample_prob = (df_pred.groupby("sample")[classes].mean())
+    sample_true = (df_pred.groupby("sample")["true_label"].first())
+    sample_pred = sample_prob.idxmax(axis=1)
+    report = classification_report(y_true=sample_true, y_pred=sample_pred, labels=classes)
+    with open(output_path+f"report_sample_{step}.csv", "w") as f:
+        f.write(report)
+
+    cm_labels = sorted(set(sample_true))
+    cm = confusion_matrix(y_pred=sample_pred, y_true=sample_true)
+    disp = ConfusionMatrixDisplay(cm, display_labels=cm_labels)
+    disp.plot(cmap="Blues")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_path+f"sample_confusion_matrix_step_{i-1}.png"))
+    plt.close()
+
