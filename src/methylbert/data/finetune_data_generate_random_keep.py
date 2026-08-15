@@ -134,7 +134,9 @@ def read_extract(bam_file_path: str, dict_ref: dict, k: int, ctype:str, dmrs: pd
         '''
             Return a dictionary of DNA seq, cell type and methylation seq processed in a 3-mer seq
         '''
-        if random.random() > keep_rate[ctype]:
+        rate = keep_rate[ctype] if ctype in keep_rate else 1
+
+        if random.random() > rate:
             return None
         aln = pysam.AlignmentFile(bam_file_path, "rb")
         

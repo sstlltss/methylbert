@@ -19,19 +19,25 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 train_data_loader = None
 test_data_loader = None
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--seq_len", type=int, default=150)
-parser.add_argument("--n_mers", type=int, default=3)
-parser.add_argument("--batch_size", type=int, default=16)
-parser.add_argument("--num_workers", type=int, default=0)
-parser.add_argument("--warmup_step", type=int, default=50)
-parser.add_argument("--steps", type=int, default=6000)
-parser.add_argument("--lr", type=float, default=2e-5)
-parser.add_argument("--fold", type=int, default=1)
-parser.add_argument("--enable_dmr", type=bool, default=True)
-parser.add_argument("--output_path", type=str, required=True)
-parser.add_argument("--seed", type=int, default=42)
-parser.add_argument("--eval_freq", type=int, default=100)
+parser = argparse.ArgumentParser(
+    usage="%(prog)s [options]",
+    description=(
+        "Fine-tune and evaluate the MethylBERT model for DNA methylation classification."
+    ),
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter
+)
+parser.add_argument("--seq_len", type=int, default=150, help="Length of the DNA sequence used as model input.")
+parser.add_argument("--n_mers", type=int, default=3, help="Size of k-mers used for DNA sequence tokenization.")
+parser.add_argument("--batch_size", type=int, default=16, help="Number of samples processed in each training batch.")
+parser.add_argument("--num_workers", type=int, default=0, help="Number of worker processes used by the DataLoader.")
+parser.add_argument("--warmup_step", type=int, default=50, help="Number of warm-up training steps for the learning rate scheduler.")
+parser.add_argument("--steps", type=int, default=6000, help="Total number of training steps.")
+parser.add_argument("--lr", type=float, default=2e-5, help="Learning rate used for model training.")
+parser.add_argument("--fold", type=int, default=1, help="Cross-validation fold to use for training and evaluation.")
+parser.add_argument("--dmr", action=argparse.BooleanOptionalAction, default=True, help="Enable the use of DMR information during model training.")
+parser.add_argument("--output_path", type=str, required=True, help="Directory where the model checkpoints and evaluation results will be saved.")
+parser.add_argument("--seed", type=int, default=42, help="Random seed used to ensure reproducibility.")
+parser.add_argument("--eval_freq", type=int, default=100, help="Evaluate the model every N training steps.")
 args = parser.parse_args()
 
 seq_len = args.seq_len
@@ -42,7 +48,7 @@ warmup_step = args.warmup_step
 steps = args.steps
 lr = args.lr
 fold = args.fold
-enable_dmr = args.enable_dmr
+dmr = args.dmr
 output_path = args.output_path
 seed = args.seed
 eval_freq = args.eval_freq
@@ -54,7 +60,7 @@ log = {"seed": seed,
        "batch_size": batch_size,
        "num_workers": num_workers,
        "output_path": output_path,
-       "enable_dmr": enable_dmr,
+       "enable_dmr": dmr,
        "lr": lr,
        "warmup_step": warmup_step,
        "steps": steps,
@@ -104,7 +110,7 @@ trainer = MethylBertFinetuneTrainerWithClassifier(
                       test_dataloader=test_data_loader,
                       id2label=id2label,
                       label2id=label2id,
-                      enable_dmr=enable_dmr,
+                      enable_dmr=dmr,
                       lr=lr,
                       with_cuda=True, 
                       log_freq=1,
@@ -114,15 +120,18 @@ trainer = MethylBertFinetuneTrainerWithClassifier(
                       ignore_mismatched_sizes=True,
                       eval_freq=eval_freq)
 
+# model fine-tuning
 trainer.load("hanyangii/methylbert_hg19_4l")
 trainer.train(steps=steps)
+
+# result analysis
 df_train  = pd.read_csv(output_path+"train.csv", sep="\t")
 df_train.head()
 df_eval  = pd.read_csv(output_path+"eval.csv", sep="\t")
 df_eval.head()
 sns.lineplot(data=df_train, x="step", y="loss", label="train loss")
 sns.lineplot(data=df_eval, x="step", y="loss", label="eval loss")
-plt.title(f"warm up: {warmup_step}, DMR: {enable_dmr}, seed: {seed}")
+plt.title(f"warm up: {warmup_step}, DMR: {dmr}, seed: {seed}")
 sns.lineplot(data=df_eval, x="step", y="ctype_acc", label="Accuracy")
 plt.savefig(output_path+"acc.jpg")
 plt.close()
